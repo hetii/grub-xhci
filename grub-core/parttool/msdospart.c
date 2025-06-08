@@ -61,7 +61,7 @@ static grub_err_t grub_pcpart_boot (const grub_device_t dev,
       return grub_errno;
     }
 
-  if (args[0].set && args[0].bool)
+  if (args[0].set && args[0].b)
     {
       for (i = 0; i < 4; i++)
 	mbr.entries[i].flag = 0x0;
@@ -116,7 +116,7 @@ static grub_err_t grub_pcpart_type (const grub_device_t dev,
 
   if (args[1].set)
     {
-      if (args[1].bool)
+      if (args[1].b)
 	type |= GRUB_PC_PARTITION_TYPE_HIDDEN_FLAG;
       else
 	type &= ~GRUB_PC_PARTITION_TYPE_HIDDEN_FLAG;
@@ -127,8 +127,7 @@ static grub_err_t grub_pcpart_type (const grub_device_t dev,
     {
       dev->disk->partition = part;
       return grub_error (GRUB_ERR_BAD_ARGUMENT,
-			 N_("the partition type 0x%x isn't "
-			    "valid"));
+			 N_("the partition type 0x%x isn't valid"), type);
     }
 
   mbr.entries[index].type = type;

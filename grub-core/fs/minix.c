@@ -38,6 +38,8 @@ GRUB_MOD_LICENSE ("GPLv3+");
 #define GRUB_MINIX_MAGIC_30	0x138F
 #endif
 
+#define	EXT2_MAGIC		0xEF53
+
 #define GRUB_MINIX_INODE_DIR_BLOCKS	7
 #define GRUB_MINIX_LOG2_BSIZE	1
 #define GRUB_MINIX_ROOT_INODE	1
@@ -96,10 +98,10 @@ struct grub_minix_sblock
   grub_uint32_t max_file_size;
   grub_uint32_t zones;
   grub_uint16_t magic;
-  
+
   grub_uint16_t pad2;
   grub_uint16_t block_size;
-  grub_uint8_t disk_version; 
+  grub_uint8_t disk_version;
 };
 #else
 struct grub_minix_sblock
@@ -349,7 +351,7 @@ grub_minix_read_inode (struct grub_minix_data *data, grub_minix_ino_t ino)
   int offs = (ino % (GRUB_DISK_SECTOR_SIZE
 		     / sizeof (struct grub_minix_inode))
 	      * sizeof (struct grub_minix_inode));
-  
+
   grub_disk_read (data->disk, block, offs,
 		  sizeof (struct grub_minix_inode), &data->inode);
 
@@ -372,7 +374,7 @@ grub_minix_lookup_symlink (struct grub_minix_data *data, grub_minix_ino_t ino)
   if (!symlink)
     return grub_errno;
   if (grub_minix_read_file (data, 0, 0, 0, sz, symlink) < 0)
-    return grub_errno;
+    goto fail;
 
   symlink[sz] = '\0';
 
@@ -382,10 +384,12 @@ grub_minix_lookup_symlink (struct grub_minix_data *data, grub_minix_ino_t ino)
 
   /* Now load in the old inode.  */
   if (grub_minix_read_inode (data, ino))
-    return grub_errno;
+    goto fail;
 
   grub_minix_find_file (data, symlink);
 
+ fail:
+  grub_free(symlink);
   return grub_errno;
 }
 
@@ -466,7 +470,21 @@ grub_minix_find_file (struct grub_minix_data *data, const char *path)
 static struct grub_minix_data *
 grub_minix_mount (grub_disk_t disk)
 {
-  struct grub_minix_data *data;
+  struct grub_minix_data *data = NULL;
+  grub_uint16_t ext2_marker;
+
+  grub_disk_read (disk, 2, 56, sizeof (ext2_marker), &ext2_marker);
+  if (grub_errno != GRUB_ERR_NONE)
+    goto fail;
+
+  /*
+   * The ext2 filesystems can sometimes be mistakenly identified as MINIX, e.g.
+   * due to the number of free ext2 inodes being written to the same location
+   * where the MINIX superblock magic is found. Avoid such situations by
+   * skipping any filesystems that have the ext2 superblock magic.
+   */
+  if (ext2_marker == grub_cpu_to_le16_compile_time (EXT2_MAGIC))
+    goto fail;
 
   data = grub_malloc (sizeof (struct grub_minix_data));
   if (!data)

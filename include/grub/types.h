@@ -20,6 +20,7 @@
 #define GRUB_TYPES_HEADER	1
 
 #include <config.h>
+#include <stdbool.h>
 #ifndef GRUB_UTIL
 #include <grub/cpu/types.h>
 #endif
@@ -80,14 +81,22 @@
 # define GRUB_CHAR_BIT	__CHAR_BIT__
 #endif
 
+#define GRUB_TYPE_BITS(type) (sizeof(type) * GRUB_CHAR_BIT)
+
 /* Define various wide integers.  */
 typedef signed char		grub_int8_t;
 typedef short			grub_int16_t;
 typedef int			grub_int32_t;
+# define PRIxGRUB_INT32_T	"x"
+# define PRIdGRUB_INT32_T	"d"
 #if GRUB_CPU_SIZEOF_LONG == 8
 typedef long			grub_int64_t;
+# define PRIxGRUB_INT64_T	"lx"
+# define PRIdGRUB_INT64_T	"ld"
 #else
 typedef long long		grub_int64_t;
+# define PRIxGRUB_INT64_T	"llx"
+# define PRIdGRUB_INT64_T	"lld"
 #endif
 
 typedef unsigned char		grub_uint8_t;
@@ -113,6 +122,7 @@ typedef grub_uint64_t	grub_size_t;
 typedef grub_int64_t	grub_ssize_t;
 
 # define GRUB_SIZE_MAX 18446744073709551615UL
+# define GRUB_SSIZE_MAX 9223372036854775807L
 
 # if GRUB_CPU_SIZEOF_LONG == 8
 #  define PRIxGRUB_SIZE	 "lx"
@@ -131,6 +141,7 @@ typedef grub_uint32_t	grub_size_t;
 typedef grub_int32_t	grub_ssize_t;
 
 # define GRUB_SIZE_MAX 4294967295UL
+# define GRUB_SSIZE_MAX 2147483647L
 
 # define PRIxGRUB_SIZE	"x"
 # define PRIxGRUB_ADDR	"x"
@@ -159,15 +170,25 @@ typedef grub_int32_t	grub_ssize_t;
 #endif
 # define GRUB_LONG_MIN (-GRUB_LONG_MAX - 1)
 
+/*
+ * Cast to unsigned long long so that the "return value" is always a consistent
+ * type and to ensure an unsigned value regardless of type parameter.
+ */
+#define GRUB_TYPE_U_MAX(type) ((unsigned long long)((typeof (type))(~0)))
+#define GRUB_TYPE_U_MIN(type) 0ULL
+
 typedef grub_uint64_t grub_properly_aligned_t;
 
 #define GRUB_PROPERLY_ALIGNED_ARRAY(name, size) grub_properly_aligned_t name[((size) + sizeof (grub_properly_aligned_t) - 1) / sizeof (grub_properly_aligned_t)]
 
 /* The type for representing a file offset.  */
-typedef grub_uint64_t	grub_off_t;
+typedef grub_uint64_t		grub_off_t;
+#define PRIxGRUB_OFFSET		PRIxGRUB_UINT64_T
+#define PRIuGRUB_OFFSET		PRIuGRUB_UINT64_T
 
 /* The type for representing a disk block address.  */
-typedef grub_uint64_t	grub_disk_addr_t;
+typedef grub_uint64_t		grub_disk_addr_t;
+#define PRIxGRUB_DISK_ADDR	PRIxGRUB_UINT64_T
 
 /* Byte-orders.  */
 static inline grub_uint16_t grub_swap_bytes16(grub_uint16_t _x)
@@ -324,5 +345,47 @@ static inline void grub_set_unaligned64 (void *ptr, grub_uint64_t val)
   struct grub_unaligned_uint64_t *dd = (struct grub_unaligned_uint64_t *) ptr;
   dd->d = val;
 }
+
+/*
+ * The grub_absolute_pointer() macro borrows the idea from Linux kernel of using
+ * RELOC_HIDE() macro to stop GCC from checking the result of pointer arithmetic
+ * and also its conversion to be inside the symbol's boundary [1]. The check
+ * is sometimes false positive, especially it is controversial to emit the array
+ * bounds [-Warray-bounds] warning on all hardwired literal pointers since GCC
+ * 11/12 [2]. Unless a good solution can be settled, for the time being we
+ * would be in favor of the macro instead of GCC pragmas which cannot match the
+ * places the warning needs to be ignored in an exact way.
+ *
+ * [1] https://lists.linuxcoding.com/kernel/2006-q3/msg17979.html
+ * [2] https://gcc.gnu.org/bugzilla/show_bug.cgi?id=99578
+ */
+#if defined(__GNUC__)
+# define grub_absolute_pointer(val)					\
+({									\
+	grub_addr_t __ptr;						\
+	asm ("" : "=r" (__ptr) : "0" ((void *) (val)));			\
+	(void *) (__ptr);						\
+})
+#else
+# define grub_absolute_pointer(val) ((void *) (val))
+#endif
+
+struct grub_guid
+{
+  grub_uint32_t data1;
+  grub_uint16_t data2;
+  grub_uint16_t data3;
+  grub_uint8_t data4[8];
+} __attribute__ ((aligned(4)));
+typedef struct grub_guid grub_guid_t;
+
+struct grub_packed_guid
+{
+  grub_uint32_t data1;
+  grub_uint16_t data2;
+  grub_uint16_t data3;
+  grub_uint8_t data4[8];
+} GRUB_PACKED;
+typedef struct grub_packed_guid grub_packed_guid_t;
 
 #endif /* ! GRUB_TYPES_HEADER */

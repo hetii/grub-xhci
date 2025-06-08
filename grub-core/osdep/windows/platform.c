@@ -104,14 +104,14 @@ get_platform (void)
     {
       platform = PLAT_BIOS;
       return;
-    }    
+    }
   platform = PLAT_EFI;
   return;
 }
 
 const char *
 grub_install_get_default_x86_platform (void)
-{ 
+{
   SYSTEM_INFO si;
 
   get_platform ();
@@ -371,7 +371,7 @@ grub_install_register_efi (grub_device_t efidir_grub_dev,
 
   hddp->partition_start = grub_partition_get_start (efidir_grub_dev->disk->partition)
     >> (efidir_grub_dev->disk->log_sector_size - GRUB_DISK_SECTOR_BITS);
-  hddp->partition_size = grub_disk_get_size (efidir_grub_dev->disk)
+  hddp->partition_size = grub_disk_native_sectors (efidir_grub_dev->disk)
     >> (efidir_grub_dev->disk->log_sector_size - GRUB_DISK_SECTOR_BITS);
 
   pathptr = hddp + 1;
@@ -379,10 +379,20 @@ grub_install_register_efi (grub_device_t efidir_grub_dev,
   filep->header.type = GRUB_EFI_MEDIA_DEVICE_PATH_TYPE;
   filep->header.subtype = GRUB_EFI_FILE_PATH_DEVICE_PATH_SUBTYPE;
 
+#if __GNUC__ >= 9
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waddress-of-packed-member"
+#endif
+
   path16_len = grub_utf8_to_utf16 (filep->path_name,
 				   path8_len * GRUB_MAX_UTF16_PER_UTF8,
 				   (const grub_uint8_t *) efifile_path,
 				   path8_len, 0);
+
+#if __GNUC__ >= 9
+#pragma GCC diagnostic pop
+#endif
+
   filep->path_name[path16_len] = 0;
   filep->header.length = sizeof (*filep) + (path16_len + 1) * sizeof (grub_uint16_t);
   pathptr = &filep->path_name[path16_len + 1];

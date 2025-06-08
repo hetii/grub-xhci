@@ -118,7 +118,7 @@ get_num_shown_items (list_impl_t self)
   int boxpad = self->item_padding;
   int item_vspace = self->item_spacing;
   int item_height = self->item_height;
-  
+
   grub_gfxmenu_box_t box = self->menu_box;
   int box_top_pad = box->get_top_pad (box);
   int box_bottom_pad = box->get_bottom_pad (box);
@@ -353,7 +353,7 @@ draw_menu (list_impl_t self, int num_shown_items)
 
   grub_video_get_viewport (&oviewport.x, &oviewport.y,
 			   &oviewport.width, &oviewport.height);
-  grub_video_set_viewport (oviewport.x + boxpad, 
+  grub_video_set_viewport (oviewport.x + boxpad,
 			   oviewport.y + boxpad,
 			   oviewport.width - 2 * boxpad,
 			   oviewport.height - 2 * boxpad);
@@ -771,7 +771,7 @@ list_set_property (void *vself, const char *name, const char *value)
         {
           self->need_to_recreate_boxes = 1;
           grub_free (self->selected_item_box_pattern);
-          self->selected_item_box_pattern = value ? grub_strdup (value) : 0;
+          self->selected_item_box_pattern = grub_strdup (value);
           self->selected_item_box_pattern_inherit = 0;
         }
     }

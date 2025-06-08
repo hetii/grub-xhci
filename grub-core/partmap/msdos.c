@@ -55,7 +55,7 @@ const char message_warn[][200] = {
 		       " avoiding it.  "
 		       "This software may cause boot or other problems in "
 		       "future.  Please ask its authors not to store data "
-		       "in the boot track") 
+		       "in the boot track")
 };
 
 
@@ -236,7 +236,8 @@ static grub_err_t
 pc_partition_map_embed (struct grub_disk *disk, unsigned int *nsectors,
 			unsigned int max_nsectors,
 			grub_embed_type_t embed_type,
-			grub_disk_addr_t **sectors)
+			grub_disk_addr_t **sectors,
+			int warn_short)
 {
   grub_disk_addr_t end = ~0ULL;
   struct grub_msdos_partition_mbr mbr;
@@ -311,7 +312,7 @@ pc_partition_map_embed (struct grub_disk *disk, unsigned int *nsectors,
 
 	  if (grub_msdos_partition_is_extended (e->type))
 	    {
-	      offset = ext_offset 
+	      offset = ext_offset
 		+ ((grub_disk_addr_t)grub_le_to_cpu32 (e->start)
 		   << (disk->log_sector_size - GRUB_DISK_SECTOR_BITS));
 	      if (! ext_offset)
@@ -389,6 +390,9 @@ pc_partition_map_embed (struct grub_disk *disk, unsigned int *nsectors,
 
       return GRUB_ERR_NONE;
     }
+
+  if (end < GRUB_MIN_RECOMMENDED_MBR_GAP && warn_short)
+    grub_util_warn ("You have a short MBR gap and use advanced config. Please increase post-MBR gap.");
 
   if (end <= 1)
     return grub_error (GRUB_ERR_FILE_NOT_FOUND,

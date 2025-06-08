@@ -29,6 +29,7 @@
 #include <grub/command.h>
 #include <grub/reader.h>
 #include <grub/parser.h>
+#include <grub/verify.h>
 
 #ifdef GRUB_MACHINE_PCBIOS
 #include <grub/machine/memory.h>
@@ -207,7 +208,7 @@ grub_set_prefix_and_root (void)
   if (device)
     {
       char *prefix_set;
-    
+
       prefix_set = grub_xasprintf ("(%s)%s", device, path ? : "");
       if (prefix_set)
 	{
@@ -269,10 +270,16 @@ grub_main (void)
 
   grub_boot_time ("After machine init.");
 
+  /* This breaks flicker-free boot on EFI systems, so disable it there. */
+#ifndef GRUB_MACHINE_EFI
   /* Hello.  */
   grub_setcolorstate (GRUB_TERM_COLOR_HIGHLIGHT);
   grub_printf ("Welcome to GRUB!\n\n");
   grub_setcolorstate (GRUB_TERM_COLOR_STANDARD);
+#endif
+
+  /* Init verifiers API. */
+  grub_verifiers_init ();
 
   grub_load_config ();
 
@@ -282,7 +289,7 @@ grub_main (void)
   grub_register_exported_symbols ();
 #ifdef GRUB_LINKER_HAVE_INIT
   grub_arch_dl_init_linker ();
-#endif  
+#endif
   grub_load_modules ();
 
   grub_boot_time ("After loading embedded modules.");

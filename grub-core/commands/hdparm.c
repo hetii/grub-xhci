@@ -333,7 +333,7 @@ grub_cmd_hdparm (grub_extcmd_context_t ctxt, int argc, char **args)
       grub_disk_close (disk);
       return grub_error (GRUB_ERR_IO, "not an ATA device");
     }
-    
+
 
   /* Change settings.  */
   if (aam >= 0)
@@ -436,9 +436,9 @@ static grub_extcmd_t cmd;
 
 GRUB_MOD_INIT(hdparm)
 {
-  cmd = grub_register_extcmd ("hdparm", grub_cmd_hdparm, 0,
-			      N_("[OPTIONS] DISK"),
-			      N_("Get/set ATA disk parameters."), options);
+  cmd = grub_register_extcmd_lockdown ("hdparm", grub_cmd_hdparm, 0,
+				       N_("[OPTIONS] DISK"),
+				       N_("Get/set ATA disk parameters."), options);
 }
 
 GRUB_MOD_FINI(hdparm)

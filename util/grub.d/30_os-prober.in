@@ -27,6 +27,7 @@ export TEXTDOMAINDIR="@localedir@"
 . "$pkgdatadir/grub-mkconfig_lib"
 
 if [ "x${GRUB_DISABLE_OS_PROBER}" = "xtrue" ]; then
+  grub_warn "$(gettext_printf "os-prober will not be executed to detect other bootable partitions.\nSystems on them will not be added to the GRUB boot configuration.\nCheck GRUB_DISABLE_OS_PROBER documentation entry.")"
   exit 0
 fi
 
@@ -34,6 +35,8 @@ if ! command -v os-prober > /dev/null || ! command -v linux-boot-prober > /dev/n
   # missing os-prober and/or linux-boot-prober
   exit 0
 fi
+
+grub_warn "$(gettext_printf "os-prober will be executed to detect other bootable partitions.\nIts output will be used to detect bootable binaries on them and create new boot entries.")"
 
 OSPROBED="`os-prober | tr ' ' '^' | paste -s -d ' '`"
 if [ -z "${OSPROBED}" ] ; then
@@ -109,6 +112,10 @@ EOF
 }
 
 used_osprober_linux_ids=
+
+if [ "x$GRUB_TOP_LEVEL_OS_PROBER" != x ]; then
+  OSPROBED=$(grub_move_to_front "$GRUB_TOP_LEVEL_OS_PROBER" ${OSPROBED})
+fi
 
 for OS in ${OSPROBED} ; do
   DEVICE="`echo ${OS} | cut -d ':' -f 1`"
@@ -207,7 +214,7 @@ EOF
         LBOOT="`echo ${LINUX} | cut -d ':' -f 2`"
         LLABEL="`echo ${LINUX} | cut -d ':' -f 3 | tr '^' ' '`"
         LKERNEL="`echo ${LINUX} | cut -d ':' -f 4`"
-        LINITRD="`echo ${LINUX} | cut -d ':' -f 5`"
+        LINITRD="`echo ${LINUX} | cut -d ':' -f 5 | tr '^' ' '`"
         LPARAMS="`echo ${LINUX} | cut -d ':' -f 6- | tr '^' ' '`"
 
         if [ -z "${LLABEL}" ] ; then

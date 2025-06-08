@@ -72,7 +72,8 @@ typedef enum
     GRUB_ERR_NET_PACKET_TOO_BIG,
     GRUB_ERR_NET_NO_DOMAIN,
     GRUB_ERR_EOF,
-    GRUB_ERR_BAD_SIGNATURE
+    GRUB_ERR_BAD_SIGNATURE,
+    GRUB_ERR_BAD_FIRMWARE
   }
 grub_err_t;
 
@@ -85,7 +86,8 @@ struct grub_error_saved
 extern grub_err_t EXPORT_VAR(grub_errno);
 extern char EXPORT_VAR(grub_errmsg)[GRUB_MAX_ERRMSG];
 
-grub_err_t EXPORT_FUNC(grub_error) (grub_err_t n, const char *fmt, ...);
+grub_err_t EXPORT_FUNC(grub_error) (grub_err_t n, const char *fmt, ...)
+    __attribute__ ((format (GNU_PRINTF, 2, 3)));
 void EXPORT_FUNC(grub_fatal) (const char *fmt, ...) __attribute__ ((noreturn));
 void EXPORT_FUNC(grub_error_push) (void);
 int EXPORT_FUNC(grub_error_pop) (void);

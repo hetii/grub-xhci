@@ -39,7 +39,7 @@ static const char *grub_human_sizes[3][6] =
     /* TRANSLATORS: that's the list of binary unit prefixes.  */
     {    "",     N_("K"),     N_("M"),     N_("G"),     N_("T"),     N_("P") },
     /* TRANSLATORS: that's the list of binary unit prefixes.  */
-    { N_("B/s"), N_("KiB/s"), N_("MiB/s"), N_("GiB/s"), N_("TiB/s"), N_("PiB/s"),  },    
+    { N_("B/s"), N_("KiB/s"), N_("MiB/s"), N_("GiB/s"), N_("TiB/s"), N_("PiB/s"),  },
   };
 
 const char *
@@ -136,7 +136,7 @@ grub_normal_print_device_info (const char *name)
 	    }
 	  if (fs->fs_mtime)
 	    {
-	      grub_int32_t tm;
+	      grub_int64_t tm;
 	      struct grub_datetime datetime;
 	      (fs->fs_mtime) (dev, &tm);
 	      if (grub_errno == GRUB_ERR_NONE)
@@ -176,14 +176,14 @@ grub_normal_print_device_info (const char *name)
 		     (grub_partition_get_start (dev->disk->partition) & 1) ? ".5" : "" );
       else
 	grub_printf_ (N_(" - Sector size %uB"), 1 << dev->disk->log_sector_size);
-      if (grub_disk_get_size (dev->disk) == GRUB_DISK_SIZE_UNKNOWN)
+      if (grub_disk_native_sectors (dev->disk) == GRUB_DISK_SIZE_UNKNOWN)
 	grub_puts_ (N_(" - Total size unknown"));
       else
 	grub_printf (_(" - Total size %llu%sKiB"),
-		     (unsigned long long) (grub_disk_get_size (dev->disk) >> 1),
+		     (unsigned long long) (grub_disk_native_sectors (dev->disk) >> 1),
 		     /* TRANSLATORS: Replace dot with appropriate decimal separator for
 			your language.  */
-		     (grub_disk_get_size (dev->disk) & 1) ? _(".5") : "");
+		     (grub_disk_native_sectors (dev->disk) & 1) ? _(".5") : "");
     }
 
   if (dev)

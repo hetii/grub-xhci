@@ -39,7 +39,7 @@ static const struct grub_arg_option options[] = {
   {0, 0, 0, 0, 0, 0}
 };
 
-static struct { const char *name; const char *hashname; } aliases[] = 
+static struct { const char *name; const char *hashname; } aliases[] =
   {
     {"sha256sum", "sha256"},
     {"sha512sum", "sha512"},
@@ -116,7 +116,7 @@ check_list (const gcry_md_spec_t *hash, const char *hashfilename,
   hashlist = grub_file_open (hashfilename, GRUB_FILE_TYPE_HASHLIST);
   if (!hashlist)
     return grub_errno;
-  
+
   while (grub_free (buf), (buf = grub_file_getline (hashlist)))
     {
       const char *p = buf;
@@ -128,19 +128,28 @@ check_list (const gcry_md_spec_t *hash, const char *hashfilename,
 	  high = hextoval (*p++);
 	  low = hextoval (*p++);
 	  if (high < 0 || low < 0)
-	    return grub_error (GRUB_ERR_BAD_FILE_TYPE, "invalid hash list");
+	    {
+	      grub_free (buf);
+	      return grub_error (GRUB_ERR_BAD_FILE_TYPE, "invalid hash list");
+	    }
 	  expected[i] = (high << 4) | low;
 	}
       if ((p[0] != ' ' && p[0] != '\t') || (p[1] != ' ' && p[1] != '\t'))
-	return grub_error (GRUB_ERR_BAD_FILE_TYPE, "invalid hash list");
+	{
+	  grub_free (buf);
+	  return grub_error (GRUB_ERR_BAD_FILE_TYPE, "invalid hash list");
+	}
       p += 2;
       if (prefix)
 	{
 	  char *filename;
-	  
+
 	  filename = grub_xasprintf ("%s/%s", prefix, p);
 	  if (!filename)
-	    return grub_errno;
+	    {
+	      grub_free (buf);
+	      return grub_errno;
+	    }
 	  file = grub_file_open (filename, GRUB_FILE_TYPE_TO_HASH
 				 | (!uncompress ? GRUB_FILE_TYPE_NO_DECOMPRESS
 				    : GRUB_FILE_TYPE_NONE));
@@ -183,7 +192,7 @@ check_list (const gcry_md_spec_t *hash, const char *hashfilename,
 				 "hash of '%s' mismatches", p);
 	    }
 	  mismatch++;
-	  continue;	  
+	  continue;
 	}
       grub_printf_ (N_("%s: OK\n"), p);
     }

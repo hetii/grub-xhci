@@ -35,8 +35,6 @@ GRUB_MOD_LICENSE ("GPLv3+");
 #define LUKS_MAGIC_1ST "LUKS\xBA\xBE"
 #define LUKS_MAGIC_2ND "SKUL\xBA\xBE"
 
-#define MAX_PASSPHRASE 256
-
 enum grub_luks2_kdf_type
 {
   LUKS2_KDF_TYPE_ARGON2I,
@@ -65,6 +63,8 @@ typedef struct grub_luks2_header grub_luks2_header_t;
 
 struct grub_luks2_keyslot
 {
+  /* The integer key to the associative array of keyslots. */
+  grub_uint64_t idx;
   grub_int64_t key_size;
   grub_int64_t priority;
   struct
@@ -103,6 +103,7 @@ typedef struct grub_luks2_keyslot grub_luks2_keyslot_t;
 
 struct grub_luks2_segment
 {
+  grub_uint64_t idx;
   grub_uint64_t offset;
   const char	*size;
   const char	*encryption;
@@ -112,6 +113,7 @@ typedef struct grub_luks2_segment grub_luks2_segment_t;
 
 struct grub_luks2_digest
 {
+  grub_uint64_t idx;
   /* Both keyslots and segments are interpreted as bitfields here */
   grub_uint64_t	keyslots;
   grub_uint64_t	segments;
@@ -200,7 +202,7 @@ luks2_parse_segment (grub_luks2_segment_t *out, const grub_json_t *segment)
       grub_json_getstring (&out->size, segment, "size") ||
       grub_json_getstring (&out->encryption, segment, "encryption") ||
       grub_json_getint64 (&out->sector_size, segment, "sector_size"))
-    return grub_error (GRUB_ERR_BAD_ARGUMENT, "Missing segment parameters", type);
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, "Missing segment parameters");
 
   return GRUB_ERR_NONE;
 }
@@ -228,8 +230,9 @@ luks2_parse_digest (grub_luks2_digest_t *out, const grub_json_t *digest)
 
   if (grub_json_getsize (&size, &segments))
     return grub_error (GRUB_ERR_BAD_ARGUMENT,
-		       "Digest references no segments", type);
+		       "Digest references no segments");
 
+  out->segments = 0;
   for (i = 0; i < size; i++)
     {
       if (grub_json_getchild (&o, &segments, i) ||
@@ -240,8 +243,9 @@ luks2_parse_digest (grub_luks2_digest_t *out, const grub_json_t *digest)
 
   if (grub_json_getsize (&size, &keyslots))
     return grub_error (GRUB_ERR_BAD_ARGUMENT,
-		       "Digest references no keyslots", type);
+		       "Digest references no keyslots");
 
+  out->keyslots = 0;
   for (i = 0; i < size; i++)
     {
       if (grub_json_getchild (&o, &keyslots, i) ||
@@ -255,54 +259,54 @@ luks2_parse_digest (grub_luks2_digest_t *out, const grub_json_t *digest)
 
 static grub_err_t
 luks2_get_keyslot (grub_luks2_keyslot_t *k, grub_luks2_digest_t *d, grub_luks2_segment_t *s,
-		   const grub_json_t *root, grub_size_t keyslot_idx)
+		   const grub_json_t *root, grub_size_t keyslot_json_idx)
 {
   grub_json_t keyslots, keyslot, digests, digest, segments, segment;
-  grub_size_t i, size;
-  grub_uint64_t idx;
+  grub_size_t json_idx, size;
 
   /* Get nth keyslot */
   if (grub_json_getvalue (&keyslots, root, "keyslots") ||
-      grub_json_getchild (&keyslot, &keyslots, keyslot_idx) ||
-      grub_json_getuint64 (&idx, &keyslot, NULL) ||
+      grub_json_getchild (&keyslot, &keyslots, keyslot_json_idx) ||
+      grub_json_getuint64 (&k->idx, &keyslot, NULL) ||
       grub_json_getchild (&keyslot, &keyslot, 0) ||
       luks2_parse_keyslot (k, &keyslot))
-    return grub_error (GRUB_ERR_BAD_ARGUMENT, "Could not parse keyslot %"PRIuGRUB_SIZE, keyslot_idx);
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, "Could not parse keyslot index %" PRIuGRUB_SIZE, keyslot_json_idx);
 
   /* Get digest that matches the keyslot. */
   if (grub_json_getvalue (&digests, root, "digests") ||
       grub_json_getsize (&size, &digests))
     return grub_error (GRUB_ERR_BAD_ARGUMENT, "Could not get digests");
-  for (i = 0; i < size; i++)
+  for (json_idx = 0; json_idx < size; json_idx++)
     {
-      if (grub_json_getchild (&digest, &digests, i) ||
-          grub_json_getchild (&digest, &digest, 0) ||
-          luks2_parse_digest (d, &digest))
-	return grub_error (GRUB_ERR_BAD_ARGUMENT, "Could not parse digest %"PRIuGRUB_SIZE, i);
+      if (grub_json_getchild (&digest, &digests, json_idx) ||
+	  grub_json_getuint64 (&d->idx, &digest, NULL) ||
+	  grub_json_getchild (&digest, &digest, 0) ||
+	  luks2_parse_digest (d, &digest))
+	return grub_error (GRUB_ERR_BAD_ARGUMENT, "Could not parse digest index %" PRIuGRUB_SIZE, json_idx);
 
-      if ((d->keyslots & (1 << idx)))
+      if ((d->keyslots & (1 << k->idx)))
 	break;
     }
-  if (i == size)
-      return grub_error (GRUB_ERR_FILE_NOT_FOUND, "No digest for keyslot %"PRIuGRUB_SIZE, keyslot_idx);
+  if (json_idx == size)
+      return grub_error (GRUB_ERR_FILE_NOT_FOUND, "No digest for keyslot \"%" PRIuGRUB_UINT64_T "\"", k->idx);
 
   /* Get segment that matches the digest. */
   if (grub_json_getvalue (&segments, root, "segments") ||
       grub_json_getsize (&size, &segments))
     return grub_error (GRUB_ERR_BAD_ARGUMENT, "Could not get segments");
-  for (i = 0; i < size; i++)
+  for (json_idx = 0; json_idx < size; json_idx++)
     {
-      if (grub_json_getchild (&segment, &segments, i) ||
-	  grub_json_getuint64 (&idx, &segment, NULL) ||
+      if (grub_json_getchild (&segment, &segments, json_idx) ||
+	  grub_json_getuint64 (&s->idx, &segment, NULL) ||
 	  grub_json_getchild (&segment, &segment, 0) ||
-          luks2_parse_segment (s, &segment))
-	return grub_error (GRUB_ERR_BAD_ARGUMENT, "Could not parse segment %"PRIuGRUB_SIZE, i);
+	  luks2_parse_segment (s, &segment))
+	return grub_error (GRUB_ERR_BAD_ARGUMENT, "Could not parse segment index %" PRIuGRUB_SIZE, json_idx);
 
-      if ((d->segments & (1 << idx)))
+      if ((d->segments & (1 << s->idx)))
 	break;
     }
-  if (i == size)
-    return grub_error (GRUB_ERR_FILE_NOT_FOUND, "No segment for digest %"PRIuGRUB_SIZE);
+  if (json_idx == size)
+    return grub_error (GRUB_ERR_FILE_NOT_FOUND, "No segment for digest \"%" PRIuGRUB_UINT64_T "\"", d->idx);
 
   return GRUB_ERR_NONE;
 }
@@ -342,14 +346,12 @@ luks2_read_header (grub_disk_t disk, grub_luks2_header_t *outhdr)
 }
 
 static grub_cryptodisk_t
-luks2_scan (grub_disk_t disk, const char *check_uuid, int check_boot)
+luks2_scan (grub_disk_t disk, grub_cryptomount_args_t cargs)
 {
   grub_cryptodisk_t cryptodisk;
   grub_luks2_header_t header;
-  char uuid[sizeof (header.uuid) + 1];
-  grub_size_t i, j;
 
-  if (check_boot)
+  if (cargs->check_boot)
     return NULL;
 
   if (luks2_read_header (disk, &header))
@@ -358,23 +360,39 @@ luks2_scan (grub_disk_t disk, const char *check_uuid, int check_boot)
       return NULL;
     }
 
-  for (i = 0, j = 0; i < sizeof (header.uuid); i++)
-    if (header.uuid[i] != '-')
-      uuid[j++] = header.uuid[i];
-  uuid[j] = '\0';
-
-  if (check_uuid && grub_strcasecmp (check_uuid, uuid) != 0)
-    return NULL;
+  if (cargs->search_uuid != NULL && grub_uuidcasecmp (cargs->search_uuid, header.uuid, sizeof (header.uuid)) != 0)
+    {
+      grub_dprintf ("luks2", "%s != %s\n", header.uuid, cargs->search_uuid);
+      return NULL;
+    }
 
   cryptodisk = grub_zalloc (sizeof (*cryptodisk));
   if (!cryptodisk)
     return NULL;
 
-  COMPILE_TIME_ASSERT (sizeof (cryptodisk->uuid) >= sizeof (uuid));
-  grub_memcpy (cryptodisk->uuid, uuid, sizeof (uuid));
+  COMPILE_TIME_ASSERT (sizeof (cryptodisk->uuid) >= sizeof (header.uuid));
+  grub_memcpy (cryptodisk->uuid, header.uuid, sizeof (header.uuid));
 
   cryptodisk->modname = "luks2";
   return cryptodisk;
+}
+
+static grub_err_t
+luks2_base64_decode (const char *in, grub_size_t inlen, grub_uint8_t *decoded, idx_t *decodedlen)
+{
+  grub_size_t unescaped_len = 0;
+  char *unescaped = NULL;
+  bool successful;
+
+  if (grub_json_unescape (&unescaped, &unescaped_len, in, inlen) != GRUB_ERR_NONE)
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, N_("could not unescape Base64 string"));
+
+  successful = base64_decode (unescaped, unescaped_len, (char *) decoded, decodedlen);
+  grub_free (unescaped);
+  if (!successful)
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, N_("could not decode Base64 string"));
+
+  return GRUB_ERR_NONE;
 }
 
 static grub_err_t
@@ -383,14 +401,16 @@ luks2_verify_key (grub_luks2_digest_t *d, grub_uint8_t *candidate_key,
 {
   grub_uint8_t candidate_digest[GRUB_CRYPTODISK_MAX_KEYLEN];
   grub_uint8_t digest[GRUB_CRYPTODISK_MAX_KEYLEN], salt[GRUB_CRYPTODISK_MAX_KEYLEN];
-  grub_size_t saltlen = sizeof (salt), digestlen = sizeof (digest);
+  idx_t saltlen = sizeof (salt), digestlen = sizeof (digest);
   const gcry_md_spec_t *hash;
   gcry_err_code_t gcry_ret;
 
   /* Decode both digest and salt */
-  if (!base64_decode (d->digest, grub_strlen (d->digest), (char *)digest, &digestlen))
+  if (luks2_base64_decode (d->digest, grub_strlen (d->digest),
+			   digest, &digestlen) != GRUB_ERR_NONE)
     return grub_error (GRUB_ERR_BAD_ARGUMENT, "Invalid digest");
-  if (!base64_decode (d->salt, grub_strlen (d->salt), (char *)salt, &saltlen))
+  if (luks2_base64_decode (d->salt, grub_strlen (d->salt),
+			   salt, &saltlen) != GRUB_ERR_NONE)
     return grub_error (GRUB_ERR_BAD_ARGUMENT, "Invalid digest salt");
 
   /* Configure the hash used for the digest. */
@@ -422,14 +442,14 @@ luks2_decrypt_key (grub_uint8_t *out_key,
   grub_uint8_t area_key[GRUB_CRYPTODISK_MAX_KEYLEN];
   grub_uint8_t salt[GRUB_CRYPTODISK_MAX_KEYLEN];
   grub_uint8_t *split_key = NULL;
-  grub_size_t saltlen = sizeof (salt);
-  char cipher[32], *p;;
+  idx_t saltlen = sizeof (salt);
+  char cipher[32], *p;
   const gcry_md_spec_t *hash;
   gcry_err_code_t gcry_ret;
   grub_err_t ret;
 
-  if (!base64_decode (k->kdf.salt, grub_strlen (k->kdf.salt),
-		     (char *)salt, &saltlen))
+  if (luks2_base64_decode (k->kdf.salt, grub_strlen (k->kdf.salt),
+			   salt, &saltlen) != GRUB_ERR_NONE)
     {
       ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Invalid keyslot salt");
       goto err;
@@ -498,7 +518,12 @@ luks2_decrypt_key (grub_uint8_t *out_key,
       goto err;
     }
 
-  gcry_ret = grub_cryptodisk_decrypt (crypt, split_key, k->area.size, 0);
+  /*
+   * The key slots area is always encrypted in 512-byte sectors,
+   * regardless of encrypted data sector size.
+   */
+  gcry_ret = grub_cryptodisk_decrypt (crypt, split_key, k->area.size, 0,
+				      GRUB_LUKS1_LOG_SECTOR_SIZE);
   if (gcry_ret)
     {
       ret = grub_crypto_gcry_error (gcry_ret);
@@ -531,12 +556,12 @@ luks2_decrypt_key (grub_uint8_t *out_key,
 
 static grub_err_t
 luks2_recover_key (grub_disk_t source,
-		   grub_cryptodisk_t crypt)
+		   grub_cryptodisk_t crypt,
+		   grub_cryptomount_args_t cargs)
 {
   grub_uint8_t candidate_key[GRUB_CRYPTODISK_MAX_KEYLEN];
-  char passphrase[MAX_PASSPHRASE], cipher[32];
-  char *json_header = NULL, *part = NULL, *ptr;
-  grub_size_t candidate_key_len = 0, i, size;
+  char cipher[32], *json_header = NULL, *ptr;
+  grub_size_t candidate_key_len = 0, json_idx, size;
   grub_luks2_header_t header;
   grub_luks2_keyslot_t keyslot;
   grub_luks2_digest_t digest;
@@ -544,6 +569,9 @@ luks2_recover_key (grub_disk_t source,
   gcry_err_code_t gcry_ret;
   grub_json_t *json = NULL, keyslots;
   grub_err_t ret;
+
+  if (cargs->key_data == NULL || cargs->key_len == 0)
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, "no key data");
 
   ret = luks2_read_header (source, &header);
   if (ret)
@@ -570,18 +598,6 @@ luks2_recover_key (grub_disk_t source,
       goto err;
     }
 
-  /* Get the passphrase from the user. */
-  if (source->partition)
-    part = grub_partition_get_name (source->partition);
-  grub_printf_ (N_("Enter passphrase for %s%s%s (%s): "), source->name,
-		source->partition ? "," : "", part ? : "",
-		crypt->uuid);
-  if (!grub_password_get (passphrase, MAX_PASSPHRASE))
-    {
-      ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Passphrase not supplied");
-      goto err;
-    }
-
   if (grub_json_getvalue (&keyslots, json, "keyslots") ||
       grub_json_getsize (&size, &keyslots))
     {
@@ -589,52 +605,153 @@ luks2_recover_key (grub_disk_t source,
       goto err;
     }
 
-  /* Try all keyslot */
-  for (i = 0; i < size; i++)
+  if (grub_disk_native_sectors (source) == GRUB_DISK_SIZE_UNKNOWN)
     {
-      ret = luks2_get_keyslot (&keyslot, &digest, &segment, json, i);
+      /* FIXME: Allow use of source disk, and maybe cause errors in read. */
+      grub_dprintf ("luks2", "Source disk %s has an unknown size, "
+			     "conservatively returning error\n", source->name);
+      ret = grub_error (GRUB_ERR_BUG, "Unknown size of luks2 source device");
+      goto err;
+    }
+
+  /* Try all keyslot */
+  for (json_idx = 0; json_idx < size; json_idx++)
+    {
+      char indexstr[21]; /* log10(2^64) ~ 20, plus NUL character. */
+      typeof (source->total_sectors) max_crypt_sectors = 0;
+
+      grub_errno = GRUB_ERR_NONE;
+      ret = luks2_get_keyslot (&keyslot, &digest, &segment, json, json_idx);
       if (ret)
-	goto err;
+	{
+	  /*
+	   * luks2_get_keyslot() can fail for a variety of reasons that do not
+	   * necessarily mean the next keyslot should not be tried (e.g. a new
+	   * kdf type). So always try the next slot.
+	   */
+	  grub_dprintf ("luks2", "Failed to get keyslot %" PRIuGRUB_UINT64_T "\n", keyslot.idx);
+	  continue;
+	}
+      if (grub_errno != GRUB_ERR_NONE)
+	  grub_dprintf ("luks2", "Ignoring unhandled error %d from luks2_get_keyslot\n", grub_errno);
 
       if (keyslot.priority == 0)
 	{
-	  grub_dprintf ("luks2", "Ignoring keyslot %"PRIuGRUB_SIZE" due to priority\n", i);
+	  grub_dprintf ("luks2", "Ignoring keyslot \"%" PRIuGRUB_UINT64_T "\" due to priority\n", keyslot.idx);
 	  continue;
-        }
+	}
 
-      grub_dprintf ("luks2", "Trying keyslot %"PRIuGRUB_SIZE"\n", i);
+      grub_dprintf ("luks2", "Trying keyslot \"%" PRIuGRUB_UINT64_T "\"\n", keyslot.idx);
+
+      /* Sector size should be one of 512, 1024, 2048, or 4096. */
+      if (!(segment.sector_size == 512 || segment.sector_size == 1024 ||
+	    segment.sector_size == 2048 || segment.sector_size == 4096))
+	{
+	  grub_dprintf ("luks2", "Segment \"%" PRIuGRUB_UINT64_T "\" sector"
+				 " size %" PRIuGRUB_UINT64_T " is not one of"
+				 " 512, 1024, 2048, or 4096\n",
+				 segment.idx, segment.sector_size);
+	  continue;
+	}
 
       /* Set up disk according to keyslot's segment. */
       crypt->offset_sectors = grub_divmod64 (segment.offset, segment.sector_size, NULL);
-      crypt->log_sector_size = sizeof (unsigned int) * 8
-		- __builtin_clz ((unsigned int) segment.sector_size) - 1;
+      crypt->log_sector_size = grub_log2ull (segment.sector_size);
+      /* Set to the source disk/partition size, which is the maximum we allow. */
+      max_crypt_sectors = grub_disk_native_sectors (source);
+      max_crypt_sectors = grub_convert_sector (max_crypt_sectors, GRUB_DISK_SECTOR_BITS,
+					       crypt->log_sector_size);
+
+      if (max_crypt_sectors < crypt->offset_sectors)
+	{
+	  grub_dprintf ("luks2", "Segment \"%" PRIuGRUB_UINT64_T "\" has offset"
+				 " %" PRIuGRUB_UINT64_T " which is greater than"
+				 " source disk size %" PRIuGRUB_UINT64_T ","
+				 " skipping\n", segment.idx, crypt->offset_sectors,
+				 max_crypt_sectors);
+	  continue;
+	}
+
       if (grub_strcmp (segment.size, "dynamic") == 0)
-	crypt->total_sectors = grub_disk_get_size (source) - crypt->offset_sectors;
+	crypt->total_sectors = max_crypt_sectors - crypt->offset_sectors;
       else
-	crypt->total_sectors = grub_strtoull (segment.size, NULL, 10);
+	{
+	  grub_errno = GRUB_ERR_NONE;
+
+	  /* Convert segment.size to sectors, rounding up to nearest sector */
+	  crypt->total_sectors = grub_strtoull (segment.size, NULL, 10);
+
+	  if (grub_errno == GRUB_ERR_NONE)
+	    {
+	      crypt->total_sectors = ALIGN_UP (crypt->total_sectors,
+					       1 << crypt->log_sector_size);
+	      crypt->total_sectors >>= crypt->log_sector_size;
+	    }
+	  else if (grub_errno == GRUB_ERR_BAD_NUMBER)
+	    {
+	      grub_dprintf ("luks2", "Segment \"%" PRIuGRUB_UINT64_T "\" size"
+				     " \"%s\" is not a parsable number,"
+				     " skipping keyslot\n",
+				     segment.idx, segment.size);
+	      continue;
+	    }
+	  else if (grub_errno == GRUB_ERR_OUT_OF_RANGE)
+	    {
+	      /*
+	       * There was an overflow in parsing segment.size, so disk must
+	       * be very large or the string is incorrect.
+	       *
+	       * TODO: Allow reading of at least up max_crypt_sectors. Really,
+	       * its very unlikely one would be booting from such a large drive
+	       * anyway. Use another smaller LUKS2 boot device.
+	       */
+	      grub_dprintf ("luks2", "Segment \"%" PRIuGRUB_UINT64_T "\" size"
+				     " %s overflowed 64-bit unsigned integer,"
+				     " skipping keyslot\n", segment.idx, segment.size);
+	      continue;
+	    }
+	}
+
+      if (crypt->total_sectors == 0)
+	{
+	  grub_dprintf ("luks2", "Segment \"%" PRIuGRUB_UINT64_T "\" has zero"
+				 " sectors, skipping\n", segment.idx);
+	  continue;
+	}
+      else if (max_crypt_sectors < (crypt->offset_sectors + crypt->total_sectors))
+	{
+	  grub_dprintf ("luks2", "Segment \"%" PRIuGRUB_UINT64_T "\" has last"
+				 " data position greater than source disk size,"
+				 " the end of the crypto device will be"
+				 " inaccessible\n", segment.idx);
+
+	  /* Allow decryption up to the end of the source disk. */
+	  crypt->total_sectors = max_crypt_sectors - crypt->offset_sectors;
+	}
 
       ret = luks2_decrypt_key (candidate_key, source, crypt, &keyslot,
-			       (const grub_uint8_t *) passphrase, grub_strlen (passphrase));
+			       cargs->key_data, cargs->key_len);
       if (ret)
 	{
-	  grub_dprintf ("luks2", "Decryption with keyslot %"PRIuGRUB_SIZE" failed: %s\n",
-			i, grub_errmsg);
+	  grub_dprintf ("luks2", "Decryption with keyslot \"%" PRIuGRUB_UINT64_T "\" failed: %s\n",
+			keyslot.idx, grub_errmsg);
 	  continue;
 	}
 
       ret = luks2_verify_key (&digest, candidate_key, keyslot.key_size);
       if (ret)
 	{
-	  grub_dprintf ("luks2", "Could not open keyslot %"PRIuGRUB_SIZE": %s\n",
-			i, grub_errmsg);
+	  grub_dprintf ("luks2", "Could not open keyslot \"%" PRIuGRUB_UINT64_T "\": %s\n",
+			keyslot.idx, grub_errmsg);
 	  continue;
 	}
 
+      grub_snprintf (indexstr, sizeof (indexstr) - 1, "%" PRIuGRUB_UINT64_T, keyslot.idx);
       /*
        * TRANSLATORS: It's a cryptographic key slot: one element of an array
        * where each element is either empty or holds a key.
        */
-      grub_printf_ (N_("Slot %"PRIuGRUB_SIZE" opened\n"), i);
+      grub_printf_ (N_("Slot \"%s\" opened\n"), indexstr);
 
       candidate_key_len = keyslot.key_size;
       break;
@@ -665,7 +782,6 @@ luks2_recover_key (grub_disk_t source,
     }
 
  err:
-  grub_free (part);
   grub_free (json_header);
   grub_json_free (json);
   return ret;

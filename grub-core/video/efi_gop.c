@@ -32,10 +32,10 @@
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
-static grub_efi_guid_t graphics_output_guid = GRUB_EFI_GOP_GUID;
-static grub_efi_guid_t active_edid_guid = GRUB_EFI_EDID_ACTIVE_GUID;
-static grub_efi_guid_t discovered_edid_guid = GRUB_EFI_EDID_DISCOVERED_GUID;
-static grub_efi_guid_t efi_var_guid = GRUB_EFI_GLOBAL_VARIABLE_GUID;
+static grub_guid_t graphics_output_guid = GRUB_EFI_GOP_GUID;
+static grub_guid_t active_edid_guid = GRUB_EFI_EDID_ACTIVE_GUID;
+static grub_guid_t discovered_edid_guid = GRUB_EFI_EDID_DISCOVERED_GUID;
+static grub_guid_t efi_var_guid = GRUB_EFI_GLOBAL_VARIABLE_GUID;
 static struct grub_efi_gop *gop;
 static unsigned old_mode;
 static int restore_needed;
@@ -110,7 +110,7 @@ grub_video_gop_fini (void)
 {
   if (restore_needed)
     {
-      efi_call_2 (gop->set_mode, gop, old_mode);
+      gop->set_mode (gop, old_mode);
       restore_needed = 0;
     }
   grub_free (framebuffer.offscreen);
@@ -235,7 +235,7 @@ grub_video_gop_fill_real_mode_info (unsigned mode,
   return GRUB_ERR_NONE;
 }
 
-static grub_err_t
+static void
 grub_video_gop_fill_mode_info (unsigned mode,
 			       struct grub_efi_gop_mode_info *in,
 			       struct grub_video_mode_info *out)
@@ -260,8 +260,6 @@ grub_video_gop_fill_mode_info (unsigned mode,
   out->blit_format = GRUB_VIDEO_BLIT_FORMAT_BGRA_8888;
   out->mode_type |= (GRUB_VIDEO_MODE_TYPE_DOUBLE_BUFFERED
 		     | GRUB_VIDEO_MODE_TYPE_UPDATING_SWAP);
-
-  return GRUB_ERR_NONE;
 }
 
 static int
@@ -274,10 +272,9 @@ grub_video_gop_iterate (int (*hook) (const struct grub_video_mode_info *info, vo
       grub_efi_uintn_t size;
       grub_efi_status_t status;
       struct grub_efi_gop_mode_info *info = NULL;
-      grub_err_t err;
       struct grub_video_mode_info mode_info;
-	 
-      status = efi_call_4 (gop->query_mode, gop, mode, &size, &info);
+
+      status = gop->query_mode (gop, mode, &size, &info);
 
       if (status)
 	{
@@ -285,12 +282,7 @@ grub_video_gop_iterate (int (*hook) (const struct grub_video_mode_info *info, vo
 	  continue;
 	}
 
-      err = grub_video_gop_fill_mode_info (mode, info, &mode_info);
-      if (err)
-	{
-	  grub_errno = GRUB_ERR_NONE;
-	  continue;
-	}
+      grub_video_gop_fill_mode_info (mode, info, &mode_info);
       if (hook (&mode_info, hook_arg))
 	return 1;
     }
@@ -316,7 +308,7 @@ grub_video_gop_get_edid (struct grub_video_edid_info *edid_info)
       char edidname[] = "agp-internal-edid";
       grub_size_t datasize;
       grub_uint8_t *data;
-      data = grub_efi_get_variable (edidname, &efi_var_guid, &datasize);
+      grub_efi_get_variable (edidname, &efi_var_guid, &datasize, (void **) &data);
       if (data && datasize > 16)
 	{
 	  copy_size = datasize - 16;
@@ -398,7 +390,7 @@ grub_video_gop_setup (unsigned int width, unsigned int height,
 	  found = 1;
 	}
     }
- 
+
   if (!found)
     {
       unsigned mode;
@@ -407,8 +399,8 @@ grub_video_gop_setup (unsigned int width, unsigned int height,
 	{
 	  grub_efi_uintn_t size;
 	  grub_efi_status_t status;
-	 
-	  status = efi_call_4 (gop->query_mode, gop, mode, &size, &info);
+
+	  status = gop->query_mode (gop, mode, &size, &info);
 	  if (status)
 	    {
 	      info = 0;
@@ -469,40 +461,39 @@ grub_video_gop_setup (unsigned int width, unsigned int height,
 	  old_mode = gop->mode->mode;
 	  restore_needed = 1;
 	}
-      efi_call_2 (gop->set_mode, gop, best_mode);
+      gop->set_mode (gop, best_mode);
     }
 
   info = gop->mode->info;
 
-  err = grub_video_gop_fill_mode_info (gop->mode->mode, info,
-				       &framebuffer.mode_info);
-  if (err)
-    {
-      grub_dprintf ("video", "GOP: couldn't fill mode info\n");
-      return err;
-    }
+  grub_video_gop_fill_mode_info (gop->mode->mode, info,
+				 &framebuffer.mode_info);
 
   framebuffer.ptr = (void *) (grub_addr_t) gop->mode->fb_base;
   framebuffer.offscreen
     = grub_malloc (framebuffer.mode_info.height
-		   * framebuffer.mode_info.width 
+		   * framebuffer.mode_info.width
 		   * sizeof (struct grub_efi_gop_blt_pixel));
 
   buffer = framebuffer.offscreen;
-      
+
   if (!buffer)
     {
       grub_dprintf ("video", "GOP: couldn't allocate shadow\n");
+
+      if (info->pixel_format == GRUB_EFI_GOT_BLT_ONLY)
+        return grub_error (GRUB_ERR_OUT_OF_MEMORY, N_("out of memory"));
+
       grub_errno = 0;
-      err = grub_video_gop_fill_mode_info (gop->mode->mode, info,
-					   &framebuffer.mode_info);
+      grub_video_gop_fill_mode_info (gop->mode->mode, info,
+				     &framebuffer.mode_info);
       buffer = framebuffer.ptr;
     }
-    
+
   grub_dprintf ("video", "GOP: initialising FB @ %p %dx%dx%d\n",
 		framebuffer.ptr, framebuffer.mode_info.width,
 		framebuffer.mode_info.height, framebuffer.mode_info.bpp);
- 
+
   err = grub_video_fb_create_render_target_from_pointer
     (&framebuffer.render_target, &framebuffer.mode_info, buffer);
 
@@ -511,15 +502,15 @@ grub_video_gop_setup (unsigned int width, unsigned int height,
       grub_dprintf ("video", "GOP: Couldn't create FB target\n");
       return err;
     }
- 
+
   err = grub_video_fb_set_active_render_target (framebuffer.render_target);
- 
+
   if (err)
     {
       grub_dprintf ("video", "GOP: Couldn't set FB target\n");
       return err;
     }
- 
+
   err = grub_video_fb_set_palette (0, GRUB_VIDEO_FBSTD_NUMCOLORS,
 				   grub_video_fbstd_colors);
 
@@ -527,7 +518,7 @@ grub_video_gop_setup (unsigned int width, unsigned int height,
     grub_dprintf ("video", "GOP: Couldn't set palette\n");
   else
     grub_dprintf ("video", "GOP: Success\n");
- 
+
   return err;
 }
 
@@ -536,10 +527,10 @@ grub_video_gop_swap_buffers (void)
 {
   if (framebuffer.offscreen)
     {
-      efi_call_10 (gop->blt, gop, framebuffer.offscreen,
-		   GRUB_EFI_BLT_BUFFER_TO_VIDEO, 0, 0, 0, 0,
-		   framebuffer.mode_info.width, framebuffer.mode_info.height,
-		   framebuffer.mode_info.width * 4);
+      gop->blt (gop, framebuffer.offscreen,
+		GRUB_EFI_BLT_BUFFER_TO_VIDEO, 0, 0, 0, 0,
+		framebuffer.mode_info.width, framebuffer.mode_info.height,
+		framebuffer.mode_info.width * 4);
     }
   return GRUB_ERR_NONE;
 }
@@ -626,7 +617,7 @@ GRUB_MOD_FINI(efi_gop)
 {
   if (restore_needed)
     {
-      efi_call_2 (gop->set_mode, gop, old_mode);
+      gop->set_mode (gop, old_mode);
       restore_needed = 0;
     }
   if (gop)

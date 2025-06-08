@@ -35,14 +35,38 @@ GRUB_MOD_LICENSE ("GPLv3+");
 
 grub_cryptodisk_dev_t grub_cryptodisk_list;
 
+enum
+  {
+    OPTION_UUID,
+    OPTION_ALL,
+    OPTION_BOOT,
+    OPTION_PASSWORD,
+    OPTION_KEYFILE,
+    OPTION_KEYFILE_OFFSET,
+    OPTION_KEYFILE_SIZE,
+    OPTION_HEADER
+  };
+
 static const struct grub_arg_option options[] =
   {
     {"uuid", 'u', 0, N_("Mount by UUID."), 0, 0},
     /* TRANSLATORS: It's still restricted to cryptodisks only.  */
     {"all", 'a', 0, N_("Mount all."), 0, 0},
     {"boot", 'b', 0, N_("Mount all volumes with `boot' flag set."), 0, 0},
+    {"password", 'p', 0, N_("Password to open volumes."), 0, ARG_TYPE_STRING},
+    {"key-file", 'k', 0, N_("Key file"), 0, ARG_TYPE_STRING},
+    {"keyfile-offset", 'O', 0, N_("Key file offset (bytes)"), 0, ARG_TYPE_INT},
+    {"keyfile-size", 'S', 0, N_("Key file data size (bytes)"), 0, ARG_TYPE_INT},
+    {"header", 'H', 0, N_("Read header from file"), 0, ARG_TYPE_STRING},
     {0, 0, 0, 0, 0, 0}
   };
+
+struct cryptodisk_read_hook_ctx
+{
+  grub_file_t hdr_file;
+  grub_disk_addr_t part_start;
+};
+typedef struct cryptodisk_read_hook_ctx *cryptodisk_read_hook_ctx_t;
 
 /* Our irreducible polynom is x^128+x^7+x^2+x+1. Lowest byte of it is:  */
 #define GF_POLYNOM 0x87
@@ -224,7 +248,8 @@ lrw_xor (const struct lrw_sector *sec,
 static gcry_err_code_t
 grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
 			   grub_uint8_t * data, grub_size_t len,
-			   grub_disk_addr_t sector, int do_encrypt)
+			   grub_disk_addr_t sector, grub_size_t log_sector_size,
+			   int do_encrypt)
 {
   grub_size_t i;
   gcry_err_code_t err;
@@ -237,7 +262,7 @@ grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
     return (do_encrypt ? grub_crypto_ecb_encrypt (dev->cipher, data, data, len)
 	    : grub_crypto_ecb_decrypt (dev->cipher, data, data, len));
 
-  for (i = 0; i < len; i += (1U << dev->log_sector_size))
+  for (i = 0; i < len; i += ((grub_size_t) 1 << log_sector_size))
     {
       grub_size_t sz = ((dev->cipher->cipher->blocksize
 			 + sizeof (grub_uint32_t) - 1)
@@ -270,7 +295,7 @@ grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
 	    if (!ctx)
 	      return GPG_ERR_OUT_OF_MEMORY;
 
-	    tmp = grub_cpu_to_le64 (sector << dev->log_sector_size);
+	    tmp = grub_cpu_to_le64 (sector << log_sector_size);
 	    dev->iv_hash->init (ctx);
 	    dev->iv_hash->write (ctx, dev->iv_prefix, dev->iv_prefix_len);
 	    dev->iv_hash->write (ctx, &tmp, sizeof (tmp));
@@ -281,25 +306,38 @@ grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
 	  }
 	  break;
 	case GRUB_CRYPTODISK_MODE_IV_PLAIN64:
-	  iv[1] = grub_cpu_to_le32 (sector >> 32);
-	  /* FALLTHROUGH */
 	case GRUB_CRYPTODISK_MODE_IV_PLAIN:
-	  iv[0] = grub_cpu_to_le32 (sector & 0xFFFFFFFF);
+	  /*
+	   * The IV is a 32 or 64 bit value of the dm-crypt native sector
+	   * number. If using 32 bit IV mode, zero out the most significant
+	   * 32 bits.
+	   */
+	  {
+	    grub_uint64_t iv64;
+
+	    iv64 = grub_cpu_to_le64 (sector << (log_sector_size
+						 - GRUB_CRYPTODISK_IV_LOG_SIZE));
+	    grub_set_unaligned64 (iv, iv64);
+	    if (dev->mode_iv == GRUB_CRYPTODISK_MODE_IV_PLAIN)
+	      iv[1] = 0;
+	  }
 	  break;
 	case GRUB_CRYPTODISK_MODE_IV_BYTECOUNT64:
-	  iv[1] = grub_cpu_to_le32 (sector >> (32 - dev->log_sector_size));
-	  iv[0] = grub_cpu_to_le32 ((sector << dev->log_sector_size)
-				    & 0xFFFFFFFF);
+	  /* The IV is the 64 bit byte offset of the sector. */
+	  iv[1] = grub_cpu_to_le32 (sector >> (GRUB_TYPE_BITS (iv[1])
+					       - log_sector_size));
+	  iv[0] = grub_cpu_to_le32 ((sector << log_sector_size)
+				    & GRUB_TYPE_U_MAX (iv[0]));
 	  break;
 	case GRUB_CRYPTODISK_MODE_IV_BENBI:
 	  {
 	    grub_uint64_t num = (sector << dev->benbi_log) + 1;
-	    iv[sz - 2] = grub_cpu_to_be32 (num >> 32);
-	    iv[sz - 1] = grub_cpu_to_be32 (num & 0xFFFFFFFF);
+	    iv[sz - 2] = grub_cpu_to_be32 (num >> GRUB_TYPE_BITS (iv[0]));
+	    iv[sz - 1] = grub_cpu_to_be32 (num & GRUB_TYPE_U_MAX (iv[0]));
 	  }
 	  break;
 	case GRUB_CRYPTODISK_MODE_IV_ESSIV:
-	  iv[0] = grub_cpu_to_le32 (sector & 0xFFFFFFFF);
+	  iv[0] = grub_cpu_to_le32 (sector & GRUB_TYPE_U_MAX (iv[0]));
 	  err = grub_crypto_ecb_encrypt (dev->essiv_cipher, iv, iv,
 					 dev->cipher->cipher->blocksize);
 	  if (err)
@@ -311,10 +349,10 @@ grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
 	case GRUB_CRYPTODISK_MODE_CBC:
 	  if (do_encrypt)
 	    err = grub_crypto_cbc_encrypt (dev->cipher, data + i, data + i,
-					   (1U << dev->log_sector_size), iv);
+					   ((grub_size_t) 1 << log_sector_size), iv);
 	  else
 	    err = grub_crypto_cbc_decrypt (dev->cipher, data + i, data + i,
-					   (1U << dev->log_sector_size), iv);
+					   ((grub_size_t) 1 << log_sector_size), iv);
 	  if (err)
 	    return err;
 	  break;
@@ -322,10 +360,10 @@ grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
 	case GRUB_CRYPTODISK_MODE_PCBC:
 	  if (do_encrypt)
 	    err = grub_crypto_pcbc_encrypt (dev->cipher, data + i, data + i,
-					    (1U << dev->log_sector_size), iv);
+					    ((grub_size_t) 1 << log_sector_size), iv);
 	  else
 	    err = grub_crypto_pcbc_decrypt (dev->cipher, data + i, data + i,
-					    (1U << dev->log_sector_size), iv);
+					    ((grub_size_t) 1 << log_sector_size), iv);
 	  if (err)
 	    return err;
 	  break;
@@ -336,18 +374,18 @@ grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
 					   dev->cipher->cipher->blocksize);
 	    if (err)
 	      return err;
-	    
-	    for (j = 0; j < (1U << dev->log_sector_size);
+
+	    for (j = 0; j < (1U << log_sector_size);
 		 j += dev->cipher->cipher->blocksize)
 	      {
 		grub_crypto_xor (data + i + j, data + i + j, iv,
 				 dev->cipher->cipher->blocksize);
 		if (do_encrypt)
-		  err = grub_crypto_ecb_encrypt (dev->cipher, data + i + j, 
+		  err = grub_crypto_ecb_encrypt (dev->cipher, data + i + j,
 						 data + i + j,
 						 dev->cipher->cipher->blocksize);
 		else
-		  err = grub_crypto_ecb_decrypt (dev->cipher, data + i + j, 
+		  err = grub_crypto_ecb_decrypt (dev->cipher, data + i + j,
 						 data + i + j,
 						 dev->cipher->cipher->blocksize);
 		if (err)
@@ -366,13 +404,13 @@ grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
 	    lrw_xor (&sec, dev, data + i);
 
 	    if (do_encrypt)
-	      err = grub_crypto_ecb_encrypt (dev->cipher, data + i, 
+	      err = grub_crypto_ecb_encrypt (dev->cipher, data + i,
 					     data + i,
-					     (1U << dev->log_sector_size));
+					     (1U << log_sector_size));
 	    else
-	      err = grub_crypto_ecb_decrypt (dev->cipher, data + i, 
+	      err = grub_crypto_ecb_decrypt (dev->cipher, data + i,
 					     data + i,
-					     (1U << dev->log_sector_size));
+					     (1U << log_sector_size));
 	    if (err)
 	      return err;
 	    lrw_xor (&sec, dev, data + i);
@@ -381,10 +419,10 @@ grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
 	case GRUB_CRYPTODISK_MODE_ECB:
 	  if (do_encrypt)
 	    err = grub_crypto_ecb_encrypt (dev->cipher, data + i, data + i,
-					   (1U << dev->log_sector_size));
+					   (1U << log_sector_size));
 	  else
 	    err = grub_crypto_ecb_decrypt (dev->cipher, data + i, data + i,
-					   (1U << dev->log_sector_size));
+					   (1U << log_sector_size));
 	  if (err)
 	    return err;
 	  break;
@@ -399,9 +437,9 @@ grub_cryptodisk_endecrypt (struct grub_cryptodisk *dev,
 gcry_err_code_t
 grub_cryptodisk_decrypt (struct grub_cryptodisk *dev,
 			 grub_uint8_t * data, grub_size_t len,
-			 grub_disk_addr_t sector)
+			 grub_disk_addr_t sector, grub_size_t log_sector_size)
 {
-  return grub_cryptodisk_endecrypt (dev, data, len, sector, 0);
+  return grub_cryptodisk_endecrypt (dev, data, len, sector, log_sector_size, 0);
 }
 
 grub_err_t
@@ -470,13 +508,15 @@ grub_cryptodisk_setcipher (grub_cryptodisk_t crypt, const char *ciphername, cons
       }
       if (cipher->cipher->blocksize != GRUB_CRYPTODISK_GF_BYTES)
 	{
-	  ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Unsupported XTS block size: %d",
+	  ret = grub_error (GRUB_ERR_BAD_ARGUMENT,
+			    "Unsupported XTS block size: %" PRIuGRUB_SIZE,
 			    cipher->cipher->blocksize);
 	  goto err;
 	}
       if (secondary_cipher->cipher->blocksize != GRUB_CRYPTODISK_GF_BYTES)
 	{
-	  ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Unsupported XTS block size: %d",
+	  ret = grub_error (GRUB_ERR_BAD_ARGUMENT,
+			    "Unsupported XTS block size: %" PRIuGRUB_SIZE,
 			    secondary_cipher->cipher->blocksize);
 	  goto err;
 	}
@@ -487,7 +527,8 @@ grub_cryptodisk_setcipher (grub_cryptodisk_t crypt, const char *ciphername, cons
       cipheriv = ciphermode + sizeof ("lrw-") - 1;
       if (cipher->cipher->blocksize != GRUB_CRYPTODISK_GF_BYTES)
 	{
-	  ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "Unsupported LRW block size: %d",
+	  ret = grub_error (GRUB_ERR_BAD_ARGUMENT,
+			    "Unsupported LRW block size: %" PRIuGRUB_SIZE,
 			    cipher->cipher->blocksize);
 	  goto err;
 	}
@@ -509,7 +550,8 @@ grub_cryptodisk_setcipher (grub_cryptodisk_t crypt, const char *ciphername, cons
     {
       if (cipher->cipher->blocksize & (cipher->cipher->blocksize - 1)
 	  || cipher->cipher->blocksize == 0)
-	grub_error (GRUB_ERR_BAD_ARGUMENT, "Unsupported benbi blocksize: %d",
+	grub_error (GRUB_ERR_BAD_ARGUMENT,
+		    "Unsupported benbi blocksize: %" PRIuGRUB_SIZE,
 		    cipher->cipher->blocksize);
 	/* FIXME should we return an error here? */
       for (benbi_log = 0;
@@ -576,7 +618,7 @@ grub_cryptodisk_setkey (grub_cryptodisk_t dev, grub_uint8_t *key, grub_size_t ke
     real_keysize /= 2;
   if (dev->mode == GRUB_CRYPTODISK_MODE_LRW)
     real_keysize -= dev->cipher->cipher->blocksize;
-	
+
   /* Set the PBKDF2 output as the cipher key.  */
   err = grub_crypto_cipher_set_key (dev->cipher, key, real_keysize);
   if (err)
@@ -660,7 +702,7 @@ grub_cryptodisk_open (const char *name, grub_disk_t disk)
   if (grub_memcmp (name, "cryptouuid/", sizeof ("cryptouuid/") - 1) == 0)
     {
       for (dev = cryptodisk_list; dev != NULL; dev = dev->next)
-	if (grub_strcasecmp (name + sizeof ("cryptouuid/") - 1, dev->uuid) == 0)
+	if (grub_uuidcasecmp (name + sizeof ("cryptouuid/") - 1, dev->uuid, sizeof (dev->uuid)) == 0)
 	  break;
     }
   else
@@ -676,16 +718,31 @@ grub_cryptodisk_open (const char *name, grub_disk_t disk)
   if (!dev)
     return grub_error (GRUB_ERR_UNKNOWN_DEVICE, "No such device");
 
-  disk->log_sector_size = dev->log_sector_size;
-
 #ifdef GRUB_UTIL
   if (dev->cheat)
     {
+      grub_uint64_t cheat_dev_size;
+      unsigned int cheat_log_sector_size;
+
       if (!GRUB_UTIL_FD_IS_VALID (dev->cheat_fd))
 	dev->cheat_fd = grub_util_fd_open (dev->cheat, GRUB_UTIL_FD_O_RDONLY);
       if (!GRUB_UTIL_FD_IS_VALID (dev->cheat_fd))
 	return grub_error (GRUB_ERR_IO, N_("cannot open `%s': %s"),
 			   dev->cheat, grub_util_fd_strerror ());
+
+      /* Use the sector size and count of the cheat device. */
+      cheat_dev_size = grub_util_get_fd_size (dev->cheat_fd, dev->cheat, &cheat_log_sector_size);
+      if (cheat_dev_size == -1)
+        {
+          const char *errmsg = grub_util_fd_strerror ();
+          grub_util_fd_close (dev->cheat_fd);
+          dev->cheat_fd = GRUB_UTIL_FD_INVALID;
+          return grub_error (GRUB_ERR_IO, N_("failed to query size of device `%s': %s"),
+                             dev->cheat, errmsg);
+        }
+
+      dev->log_sector_size = cheat_log_sector_size;
+      dev->total_sectors = cheat_dev_size >> cheat_log_sector_size;
     }
 #endif
 
@@ -699,6 +756,7 @@ grub_cryptodisk_open (const char *name, grub_disk_t disk)
     }
 
   disk->data = dev;
+  disk->log_sector_size = dev->log_sector_size;
   disk->total_sectors = dev->total_sectors;
   disk->max_agglomerate = GRUB_DISK_MAX_MAX_AGGLOMERATE;
   disk->id = dev->id;
@@ -766,7 +824,7 @@ grub_cryptodisk_read (grub_disk_t disk, grub_disk_addr_t sector,
     }
   gcry_err = grub_cryptodisk_endecrypt (dev, (grub_uint8_t *) buf,
 					size << disk->log_sector_size,
-					sector, 0);
+					sector, dev->log_sector_size, 0);
   return grub_crypto_gcry_error (gcry_err);
 }
 
@@ -807,7 +865,7 @@ grub_cryptodisk_write (grub_disk_t disk, grub_disk_addr_t sector,
 
   gcry_err = grub_cryptodisk_endecrypt (dev, (grub_uint8_t *) tmp,
 					size << disk->log_sector_size,
-					sector, 1);
+					sector, disk->log_sector_size, 1);
   if (gcry_err)
     {
       grub_free (tmp);
@@ -870,10 +928,7 @@ grub_cryptodisk_insert (grub_cryptodisk_t newdev, const char *name,
 {
   newdev->source = grub_strdup (name);
   if (!newdev->source)
-    {
-      grub_free (newdev);
-      return grub_errno;
-    }
+    return grub_errno;
 
   newdev->id = last_cryptodisk_id++;
   newdev->source_id = source->id;
@@ -890,7 +945,7 @@ grub_cryptodisk_get_by_uuid (const char *uuid)
 {
   grub_cryptodisk_t dev;
   for (dev = cryptodisk_list; dev != NULL; dev = dev->next)
-    if (grub_strcasecmp (dev->uuid, uuid) == 0)
+    if (grub_uuidcasecmp (dev->uuid, uuid, sizeof (dev->uuid)) == 0)
       return dev;
   return NULL;
 }
@@ -965,9 +1020,6 @@ grub_util_cryptodisk_get_uuid (grub_disk_t disk)
 
 #endif
 
-static int check_boot, have_it;
-static char *search_uuid;
-
 static void
 cryptodisk_close (grub_cryptodisk_t dev)
 {
@@ -978,39 +1030,141 @@ cryptodisk_close (grub_cryptodisk_t dev)
 }
 
 static grub_err_t
-grub_cryptodisk_scan_device_real (const char *name, grub_disk_t source)
+cryptodisk_read_hook (grub_disk_addr_t sector, unsigned offset,
+		      unsigned length, char *buf, void *data)
 {
-  grub_err_t err;
+  cryptodisk_read_hook_ctx_t ctx = data;
+
+  if (ctx->hdr_file == NULL)
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, N_("header file not found"));
+
+  if (grub_file_seek (ctx->hdr_file,
+		      ((sector - ctx->part_start) * GRUB_DISK_SECTOR_SIZE) + offset)
+      == (grub_off_t) -1)
+    return grub_errno;
+
+  if (grub_file_read (ctx->hdr_file, buf, length) != (grub_ssize_t) length)
+    {
+      if (grub_errno == GRUB_ERR_NONE)
+	grub_error (GRUB_ERR_OUT_OF_RANGE, N_("header file too small"));
+      return grub_errno;
+    }
+
+  return GRUB_ERR_NONE;
+}
+
+static grub_cryptodisk_t
+grub_cryptodisk_scan_device_real (const char *name,
+				  grub_disk_t source,
+				  grub_cryptomount_args_t cargs)
+{
+  grub_err_t ret = GRUB_ERR_NONE;
   grub_cryptodisk_t dev;
   grub_cryptodisk_dev_t cr;
+  struct cryptodisk_read_hook_ctx read_hook_data = {0};
+  int askpass = 0;
+  char *part = NULL;
 
   dev = grub_cryptodisk_get_by_source_disk (source);
 
   if (dev)
-    return GRUB_ERR_NONE;
+    return dev;
+
+  if (cargs->hdr_file != NULL)
+    {
+      /*
+       * Set read hook to read header from a file instead of the source disk.
+       * Disk read hooks are executed after the data has been read from the
+       * disk. This is okay, because the read hook is given the read buffer
+       * before its sent back to the caller. In this case, the hook can then
+       * overwrite the data read from the disk device with data from the
+       * header file sent in as the read hook data. This is transparent to the
+       * read caller. Since the callers of this function have just opened the
+       * source disk, there are no current read hooks, so there's no need to
+       * save/restore them nor consider if they should be called or not.
+       *
+       * This hook assumes that the header is at the start of the volume, which
+       * is not the case for some formats (eg. GELI). It also can only be used
+       * with formats where the detached header file can be written to the
+       * first blocks of the volume and the volume could still be unlocked.
+       * So the header file can not be formatted differently from the on-disk
+       * header. If these assumpts are not met, detached header file processing
+       * must be specially handled in the cryptodisk backend module.
+       *
+       * This hook needs only be set once and will be called potentially many
+       * times by a backend. This is fine because of the assumptions mentioned
+       * and the read hook reads from absolute offsets and is stateless.
+       */
+      read_hook_data.part_start = grub_partition_get_start (source->partition);
+      read_hook_data.hdr_file = cargs->hdr_file;
+      source->read_hook = cryptodisk_read_hook;
+      source->read_hook_data = (void *) &read_hook_data;
+    }
 
   FOR_CRYPTODISK_DEVS (cr)
   {
-    dev = cr->scan (source, search_uuid, check_boot);
+    /*
+     * Loop through each cryptodisk backend that is registered (ie. loaded).
+     * If the scan returns NULL, then the backend being tested does not
+     * recognize the source disk, so move on to the next backend.
+     */
+    dev = cr->scan (source, cargs);
     if (grub_errno)
-      return grub_errno;
+      goto error_no_close;
     if (!dev)
       continue;
-    
-    err = cr->recover_key (source, dev);
-    if (err)
-    {
-      cryptodisk_close (dev);
-      return err;
-    }
 
-    grub_cryptodisk_insert (dev, name, source);
+    if (!cargs->key_len)
+      {
+	/* Get the passphrase from the user, if no key data. */
+	askpass = 1;
+	part = grub_partition_get_name (source->partition);
+	grub_printf_ (N_("Enter passphrase for %s%s%s (%s): "), source->name,
+		     source->partition != NULL ? "," : "",
+		     part != NULL ? part : N_("UNKNOWN"),
+		     dev->uuid);
+	grub_free (part);
 
-    have_it = 1;
+	cargs->key_data = grub_malloc (GRUB_CRYPTODISK_MAX_PASSPHRASE);
+	if (cargs->key_data == NULL)
+	  goto error_no_close;
 
-    return GRUB_ERR_NONE;
+	if (!grub_password_get ((char *) cargs->key_data, GRUB_CRYPTODISK_MAX_PASSPHRASE))
+	  {
+	    grub_error (GRUB_ERR_BAD_ARGUMENT, "passphrase not supplied");
+	    goto error;
+	  }
+	cargs->key_len = grub_strlen ((char *) cargs->key_data);
+      }
+
+    ret = cr->recover_key (source, dev, cargs);
+    if (ret != GRUB_ERR_NONE)
+      goto error;
+
+    ret = grub_cryptodisk_insert (dev, name, source);
+    if (ret != GRUB_ERR_NONE)
+      goto error;
+
+    goto cleanup;
   }
-  return GRUB_ERR_NONE;
+  grub_error (GRUB_ERR_BAD_MODULE, "no cryptodisk module can handle this device");
+  goto cleanup;
+
+ error:
+  cryptodisk_close (dev);
+ error_no_close:
+  dev = NULL;
+
+ cleanup:
+  if (cargs->hdr_file != NULL)
+    source->read_hook = NULL;
+
+  if (askpass)
+    {
+      cargs->key_len = 0;
+      grub_free (cargs->key_data);
+    }
+  return dev;
 }
 
 #ifdef GRUB_UTIL
@@ -1022,6 +1176,7 @@ grub_cryptodisk_cheat_mount (const char *sourcedev, const char *cheat)
   grub_cryptodisk_t dev;
   grub_cryptodisk_dev_t cr;
   grub_disk_t source;
+  struct grub_cryptomount_args cargs = {0};
 
   /* Try to open disk.  */
   source = grub_disk_open (sourcedev);
@@ -1032,13 +1187,13 @@ grub_cryptodisk_cheat_mount (const char *sourcedev, const char *cheat)
 
   if (dev)
     {
-      grub_disk_close (source);	
+      grub_disk_close (source);
       return GRUB_ERR_NONE;
     }
 
   FOR_CRYPTODISK_DEVS (cr)
   {
-    dev = cr->scan (source, search_uuid, check_boot);
+    dev = cr->scan (source, &cargs);
     if (grub_errno)
       return grub_errno;
     if (!dev)
@@ -1062,10 +1217,13 @@ grub_cryptodisk_cheat_mount (const char *sourcedev, const char *cheat)
 
 static int
 grub_cryptodisk_scan_device (const char *name,
-			     void *data __attribute__ ((unused)))
+			     void *data)
 {
-  grub_err_t err;
+  int ret = 0;
   grub_disk_t source;
+  grub_cryptodisk_t dev;
+  grub_cryptomount_args_t cargs = data;
+  grub_errno = GRUB_ERR_NONE;
 
   /* Try to open disk.  */
   source = grub_disk_open (name);
@@ -1075,26 +1233,139 @@ grub_cryptodisk_scan_device (const char *name,
       return 0;
     }
 
-  err = grub_cryptodisk_scan_device_real (name, source);
+  dev = grub_cryptodisk_scan_device_real (name, source, cargs);
+  if (dev)
+    {
+      ret = (cargs->search_uuid != NULL
+	     && grub_uuidcasecmp (cargs->search_uuid, dev->uuid, sizeof (dev->uuid)) == 0);
+      goto cleanup;
+    }
 
-  grub_disk_close (source);
-  
-  if (err)
+  /*
+   * Do not print error when err is GRUB_ERR_BAD_MODULE to avoid many unhelpful
+   * error messages.
+   */
+  if (grub_errno == GRUB_ERR_BAD_MODULE)
+    grub_error_pop ();
+
+  if (cargs->search_uuid != NULL)
+    /* Push error onto stack to save for cryptomount. */
+    grub_error_push ();
+  else
     grub_print_error ();
-  return have_it && search_uuid ? 1 : 0;
+
+ cleanup:
+  grub_disk_close (source);
+  return ret;
 }
 
 static grub_err_t
 grub_cmd_cryptomount (grub_extcmd_context_t ctxt, int argc, char **args)
 {
   struct grub_arg_list *state = ctxt->state;
+  struct grub_cryptomount_args cargs = {0};
 
-  if (argc < 1 && !state[1].set && !state[2].set)
+  if (argc < 1 && !state[OPTION_ALL].set && !state[OPTION_BOOT].set)
     return grub_error (GRUB_ERR_BAD_ARGUMENT, "device name required");
 
-  have_it = 0;
-  if (state[0].set)
+  if (grub_cryptodisk_list == NULL)
+    return grub_error (GRUB_ERR_BAD_MODULE, "no cryptodisk modules loaded");
+
+  if (state[OPTION_PASSWORD].set) /* password */
     {
+      cargs.key_data = (grub_uint8_t *) state[OPTION_PASSWORD].arg;
+      cargs.key_len = grub_strlen (state[OPTION_PASSWORD].arg);
+    }
+
+  if (state[OPTION_KEYFILE].set) /* keyfile */
+    {
+      const char *p = NULL;
+      grub_file_t keyfile;
+      unsigned long long keyfile_offset = 0, keyfile_size = 0;
+
+      if (state[OPTION_KEYFILE_OFFSET].set) /* keyfile-offset */
+	{
+	  grub_errno = GRUB_ERR_NONE;
+	  keyfile_offset = grub_strtoull (state[OPTION_KEYFILE_OFFSET].arg, &p, 0);
+
+	  if (state[OPTION_KEYFILE_OFFSET].arg[0] == '\0' || *p != '\0')
+	    return grub_error (grub_errno,
+			       N_("non-numeric or invalid keyfile offset `%s'"),
+			       state[OPTION_KEYFILE_OFFSET].arg);
+	}
+
+      if (state[OPTION_KEYFILE_SIZE].set) /* keyfile-size */
+	{
+	  grub_errno = GRUB_ERR_NONE;
+	  keyfile_size = grub_strtoull (state[OPTION_KEYFILE_SIZE].arg, &p, 0);
+
+	  if (state[OPTION_KEYFILE_SIZE].arg[0] == '\0' || *p != '\0')
+	    return grub_error (grub_errno,
+			       N_("non-numeric or invalid keyfile size `%s'"),
+			       state[OPTION_KEYFILE_SIZE].arg);
+
+	  if (keyfile_size == 0)
+	    return grub_error (GRUB_ERR_OUT_OF_RANGE, N_("key file size is 0"));
+
+	  if (keyfile_size > GRUB_CRYPTODISK_MAX_KEYFILE_SIZE)
+	    return grub_error (GRUB_ERR_OUT_OF_RANGE,
+			       N_("key file size exceeds maximum (%d)"),
+			       GRUB_CRYPTODISK_MAX_KEYFILE_SIZE);
+	}
+
+      keyfile = grub_file_open (state[OPTION_KEYFILE].arg,
+				GRUB_FILE_TYPE_CRYPTODISK_ENCRYPTION_KEY);
+      if (keyfile == NULL)
+	return grub_errno;
+
+      if (keyfile_offset > keyfile->size)
+	return grub_error (GRUB_ERR_OUT_OF_RANGE,
+			   N_("Keyfile offset, %llu, is greater than"
+			      "keyfile size, %" PRIuGRUB_UINT64_T),
+			   keyfile_offset, keyfile->size);
+
+      if (grub_file_seek (keyfile, (grub_off_t) keyfile_offset) == (grub_off_t) -1)
+	return grub_errno;
+
+      if (keyfile_size != 0)
+	{
+	  if (keyfile_size > (keyfile->size - keyfile_offset))
+	    return grub_error (GRUB_ERR_FILE_READ_ERROR,
+			       N_("keyfile is too small: requested %llu bytes,"
+				  " but the file only has %" PRIuGRUB_UINT64_T
+				  " bytes left at offset %llu"),
+			       keyfile_size,
+			       (grub_off_t) (keyfile->size - keyfile_offset),
+			       keyfile_offset);
+
+	  cargs.key_len = keyfile_size;
+	}
+      else
+	cargs.key_len = keyfile->size - keyfile_offset;
+
+      cargs.key_data = grub_malloc (cargs.key_len);
+      if (cargs.key_data == NULL)
+	return GRUB_ERR_OUT_OF_MEMORY;
+
+      if (grub_file_read (keyfile, cargs.key_data, cargs.key_len) != (grub_ssize_t) cargs.key_len)
+	return grub_error (GRUB_ERR_FILE_READ_ERROR, (N_("failed to read key file")));
+    }
+
+  if (state[OPTION_HEADER].set) /* header */
+    {
+      if (state[OPTION_UUID].set)
+	return grub_error (GRUB_ERR_BAD_ARGUMENT,
+			   N_("cannot use UUID lookup with detached header"));
+
+      cargs.hdr_file = grub_file_open (state[OPTION_HEADER].arg,
+			    GRUB_FILE_TYPE_CRYPTODISK_DETACHED_HEADER);
+      if (cargs.hdr_file == NULL)
+	return grub_errno;
+    }
+
+  if (state[OPTION_UUID].set) /* uuid */
+    {
+      int found_uuid;
       grub_cryptodisk_t dev;
 
       dev = grub_cryptodisk_get_by_uuid (args[0]);
@@ -1105,34 +1376,39 @@ grub_cmd_cryptomount (grub_extcmd_context_t ctxt, int argc, char **args)
 	  return GRUB_ERR_NONE;
 	}
 
-      check_boot = state[2].set;
-      search_uuid = args[0];
-      grub_device_iterate (&grub_cryptodisk_scan_device, NULL);
-      search_uuid = NULL;
+      cargs.check_boot = state[OPTION_BOOT].set;
+      cargs.search_uuid = args[0];
+      found_uuid = grub_device_iterate (&grub_cryptodisk_scan_device, &cargs);
 
-      if (!have_it)
-	return grub_error (GRUB_ERR_BAD_ARGUMENT, "no such cryptodisk found");
-      return GRUB_ERR_NONE;
+      if (found_uuid)
+	return GRUB_ERR_NONE;
+      else if (grub_errno == GRUB_ERR_NONE)
+	{
+	  /*
+	   * Try to pop the next error on the stack. If there is not one, then
+	   * no device matched the given UUID.
+	   */
+	  grub_error_pop ();
+	  if (grub_errno == GRUB_ERR_NONE)
+	    return grub_error (GRUB_ERR_BAD_ARGUMENT, "no such cryptodisk found, perhaps a needed disk or cryptodisk module is not loaded");
+	}
+      return grub_errno;
     }
-  else if (state[1].set || (argc == 0 && state[2].set))
+  else if (state[OPTION_ALL].set || (argc == 0 && state[OPTION_BOOT].set)) /* -a|-b */
     {
-      search_uuid = NULL;
-      check_boot = state[2].set;
-      grub_device_iterate (&grub_cryptodisk_scan_device, NULL);
-      search_uuid = NULL;
+      cargs.check_boot = state[OPTION_BOOT].set;
+      grub_device_iterate (&grub_cryptodisk_scan_device, &cargs);
       return GRUB_ERR_NONE;
     }
   else
     {
-      grub_err_t err;
       grub_disk_t disk;
       grub_cryptodisk_t dev;
       char *diskname;
       char *disklast = NULL;
       grub_size_t len;
 
-      search_uuid = NULL;
-      check_boot = state[2].set;
+      cargs.check_boot = state[OPTION_BOOT].set;
       diskname = args[0];
       len = grub_strlen (diskname);
       if (len && diskname[0] == '(' && diskname[len - 1] == ')')
@@ -1160,13 +1436,13 @@ grub_cmd_cryptomount (grub_extcmd_context_t ctxt, int argc, char **args)
 	  return GRUB_ERR_NONE;
 	}
 
-      err = grub_cryptodisk_scan_device_real (diskname, disk);
+      dev = grub_cryptodisk_scan_device_real (diskname, disk, &cargs);
 
       grub_disk_close (disk);
       if (disklast)
 	*disklast = ')';
 
-      return err;
+      return (dev == NULL) ? grub_errno : GRUB_ERR_NONE;
     }
 }
 
@@ -1203,12 +1479,22 @@ luks_script_get (grub_size_t *sz)
   *sz = 0;
 
   for (i = cryptodisk_list; i != NULL; i = i->next)
-    if (grub_strcmp (i->modname, "luks") == 0)
+    if (grub_strcmp (i->modname, "luks") == 0 ||
+	grub_strcmp (i->modname, "luks2") == 0)
       {
-	size += sizeof ("luks_mount ");
+	size += grub_strlen (i->modname);
+	size += sizeof ("_mount");
 	size += grub_strlen (i->uuid);
 	size += grub_strlen (i->cipher->cipher->name);
-	size += 54;
+	/*
+	 * Add space in the line for (in order) spaces, cipher mode, cipher IV
+	 * mode, sector offset, sector size and the trailing newline. This is
+	 * an upper bound on the size of this data. There are 15 extra bytes
+	 * in an earlier version of this code that are unaccounted for. It is
+	 * left in the calculations in case it is needed. At worst, its short-
+	 * lived wasted space.
+	 */
+	size += 5 + 5 + 8 + 20 + 6 + 1 + 15;
 	if (i->essiv_hash)
 	  size += grub_strlen (i->essiv_hash->name);
 	size += i->keysize * 2;
@@ -1221,22 +1507,25 @@ luks_script_get (grub_size_t *sz)
   ptr = ret;
 
   for (i = cryptodisk_list; i != NULL; i = i->next)
-    if (grub_strcmp (i->modname, "luks") == 0)
+    if (grub_strcmp (i->modname, "luks") == 0 ||
+	grub_strcmp (i->modname, "luks2") == 0)
       {
 	unsigned j;
 	const char *iptr;
-	ptr = grub_stpcpy (ptr, "luks_mount ");
+	ptr = grub_stpcpy (ptr, i->modname);
+	ptr = grub_stpcpy (ptr, "_mount ");
 	ptr = grub_stpcpy (ptr, i->uuid);
 	*ptr++ = ' ';
-	grub_snprintf (ptr, 21, "%" PRIuGRUB_UINT64_T " ", i->offset_sectors);
-	while (*ptr)
-	  ptr++;
+	ptr += grub_snprintf (ptr, 21, "%" PRIxGRUB_OFFSET, i->offset_sectors);
+	*ptr++ = ' ';
+	ptr += grub_snprintf (ptr, 7, "%u", 1 << i->log_sector_size);
+	*ptr++ = ' ';
 	for (iptr = i->cipher->cipher->name; *iptr; iptr++)
 	  *ptr++ = grub_tolower (*iptr);
 	switch (i->mode)
 	  {
 	  case GRUB_CRYPTODISK_MODE_ECB:
-	    ptr = grub_stpcpy (ptr, "-ecb"); 
+	    ptr = grub_stpcpy (ptr, "-ecb");
 	    break;
 	  case GRUB_CRYPTODISK_MODE_CBC:
 	    ptr = grub_stpcpy (ptr, "-cbc");
@@ -1255,19 +1544,19 @@ luks_script_get (grub_size_t *sz)
 	switch (i->mode_iv)
 	  {
 	  case GRUB_CRYPTODISK_MODE_IV_NULL:
-	    ptr = grub_stpcpy (ptr, "-null"); 
+	    ptr = grub_stpcpy (ptr, "-null");
 	    break;
 	  case GRUB_CRYPTODISK_MODE_IV_PLAIN:
-	    ptr = grub_stpcpy (ptr, "-plain"); 
+	    ptr = grub_stpcpy (ptr, "-plain");
 	    break;
 	  case GRUB_CRYPTODISK_MODE_IV_PLAIN64:
-	    ptr = grub_stpcpy (ptr, "-plain64"); 
+	    ptr = grub_stpcpy (ptr, "-plain64");
 	    break;
 	  case GRUB_CRYPTODISK_MODE_IV_BENBI:
-	    ptr = grub_stpcpy (ptr, "-benbi"); 
+	    ptr = grub_stpcpy (ptr, "-benbi");
 	    break;
 	  case GRUB_CRYPTODISK_MODE_IV_ESSIV:
-	    ptr = grub_stpcpy (ptr, "-essiv:"); 
+	    ptr = grub_stpcpy (ptr, "-essiv:");
 	    ptr = grub_stpcpy (ptr, i->essiv_hash->name);
 	    break;
 	  case GRUB_CRYPTODISK_MODE_IV_BYTECOUNT64:
@@ -1299,7 +1588,9 @@ GRUB_MOD_INIT (cryptodisk)
 {
   grub_disk_dev_register (&grub_cryptodisk_dev);
   cmd = grub_register_extcmd ("cryptomount", grub_cmd_cryptomount, 0,
-			      N_("SOURCE|-u UUID|-a|-b"),
+			      N_("[ [-p password] | [-k keyfile"
+				 " [-O keyoffset] [-S keysize] ] ] [-H file]"
+				 " <SOURCE|-u UUID|-a|-b>"),
 			      N_("Mount a crypto device."), options);
   grub_procfs_register ("luks_script", &luks_script);
 }

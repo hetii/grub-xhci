@@ -24,6 +24,8 @@
 #include <grub/term.h>
 #include <grub/env.h>
 #include <grub/i18n.h>
+#include <grub/types.h>
+#include <grub/charset.h>
 
 union printf_arg
 {
@@ -33,7 +35,9 @@ union printf_arg
   enum
     {
       INT, LONG, LONGLONG,
-      UNSIGNED_INT = 3, UNSIGNED_LONG, UNSIGNED_LONGLONG
+      UNSIGNED_INT = 3, UNSIGNED_LONG, UNSIGNED_LONGLONG,
+      STRING,
+      GUID
     } type;
   long long ll;
 };
@@ -112,9 +116,29 @@ grub_printf (const char *fmt, ...)
   va_list ap;
   int ret;
 
+#if defined(MM_DEBUG) && !defined(GRUB_UTIL) && !defined (GRUB_MACHINE_EMU)
+  /*
+   * To prevent infinite recursion when grub_mm_debug is on, disable it
+   * when calling grub_vprintf(). One such call loop is:
+   *   grub_vprintf() -> parse_printf_args() -> parse_printf_arg_fmt() ->
+   *     grub_debug_calloc() -> grub_printf() -> grub_vprintf().
+   */
+  int grub_mm_debug_save = 0;
+
+  if (grub_mm_debug)
+    {
+      grub_mm_debug_save = grub_mm_debug;
+      grub_mm_debug = 0;
+    }
+#endif
+
   va_start (ap, fmt);
   ret = grub_vprintf (fmt, ap);
   va_end (ap);
+
+#if defined(MM_DEBUG) && !defined(GRUB_UTIL) && !defined (GRUB_MACHINE_EMU)
+  grub_mm_debug = grub_mm_debug_save;
+#endif
 
   return ret;
 }
@@ -161,16 +185,49 @@ __attribute__ ((alias("grub_printf")));
 int
 grub_debug_enabled (const char * condition)
 {
-  const char *debug;
+  const char *debug, *found;
+  grub_size_t clen;
+  int ret = 0;
 
   debug = grub_env_get ("debug");
   if (!debug)
     return 0;
 
-  if (grub_strword (debug, "all") || grub_strword (debug, condition))
-    return 1;
+  if (grub_strword (debug, "all"))
+    {
+      if (debug[3] == '\0')
+	return 1;
+      ret = 1;
+    }
 
-  return 0;
+  clen = grub_strlen (condition);
+  found = debug-1;
+  while(1)
+    {
+      found = grub_strstr (found+1, condition);
+
+      if (found == NULL)
+	break;
+
+      /* Found condition is not a whole word, so ignore it. */
+      if (*(found + clen) != '\0' && *(found + clen) != ','
+	 && !grub_isspace (*(found + clen)))
+	continue;
+
+      /*
+       * If found condition is at the start of debug or the start is on a word
+       * boundary, then enable debug. Else if found condition is prefixed with
+       * '-' and the start is on a word boundary, then disable debug. If none
+       * of these cases, ignore.
+       */
+      if (found == debug || *(found - 1) == ',' || grub_isspace (*(found - 1)))
+	ret = 1;
+      else if (*(found - 1) == '-' && ((found == debug + 1) || (*(found - 2) == ','
+			       || grub_isspace (*(found - 2)))))
+	ret = 0;
+    }
+
+  return ret;
 }
 
 void
@@ -181,7 +238,7 @@ grub_real_dprintf (const char *file, const int line, const char *condition,
 
   if (grub_debug_enabled (condition))
     {
-      grub_printf ("%s:%d: ", file, line);
+      grub_printf ("%s:%d:%s: ", file, line, condition);
       va_start (args, fmt);
       grub_vprintf (fmt, args);
       va_end (args);
@@ -419,6 +476,10 @@ grub_strtoull (const char * restrict str, const char ** const restrict end,
 	{
 	  grub_error (GRUB_ERR_OUT_OF_RANGE,
 		      N_("overflow is detected"));
+
+          if (end)
+            *end = (char *) str;
+
 	  return ~0ULL;
 	}
 
@@ -430,6 +491,10 @@ grub_strtoull (const char * restrict str, const char ** const restrict end,
     {
       grub_error (GRUB_ERR_BAD_NUMBER,
 		  N_("unrecognized number"));
+
+      if (end)
+        *end = (char *) str;
+
       return 0;
     }
 
@@ -601,7 +666,7 @@ grub_divmod64 (grub_uint64_t n, grub_uint64_t d, grub_uint64_t *r)
 static inline char *
 grub_lltoa (char *str, int c, unsigned long long n)
 {
-  unsigned base = ((c == 'x') || (c == 'X')) ? 16 : 10;
+  unsigned base = ((c == 'x') || (c == 'X')) ? 16 : ((c == 'o') ? 8 : 10);
   char *p;
 
   if ((long long) n < 0 && c == 'd')
@@ -616,9 +681,15 @@ grub_lltoa (char *str, int c, unsigned long long n)
     do
       {
 	unsigned d = (unsigned) (n & 0xf);
-	*p++ = (d > 9) ? d + ((c == 'x') ? 'a' : 'A') - 10 : d + '0';
+	*p++ = (d > 9) ? (d + ((c == 'x') ? 'a' : 'A') - 10) : d + '0';
       }
     while (n >>= 4);
+  else if (base == 8)
+    do
+      {
+	*p++ = ((unsigned) (n & 0x7)) + '0';
+      }
+    while (n >>= 3);
   else
     /* BASE == 10 */
     do
@@ -636,9 +707,26 @@ grub_lltoa (char *str, int c, unsigned long long n)
   return p;
 }
 
-static void
-parse_printf_args (const char *fmt0, struct printf_args *args,
-		   va_list args_in)
+/*
+ * Parse printf() fmt0 string into args arguments.
+ *
+ * The parsed arguments are either used by a printf() function to format the fmt0
+ * string or they are used to compare a format string from an untrusted source
+ * against a format string with expected arguments.
+ *
+ * When the fmt_check is set to !0, e.g. 1, then this function is executed in
+ * printf() format check mode. This enforces stricter rules for parsing the
+ * fmt0 to limit exposure to possible errors in printf() handling. It also
+ * disables positional parameters, "$", because some formats, e.g "%s%1$d",
+ * cannot be validated with the current implementation.
+ *
+ * The max_args allows to set a maximum number of accepted arguments. If the fmt0
+ * string defines more arguments than the max_args then the parse_printf_arg_fmt()
+ * function returns an error. This is currently used for format check only.
+ */
+static grub_err_t
+parse_printf_arg_fmt (const char *fmt0, struct printf_args *args,
+		      int fmt_check, grub_size_t max_args)
 {
   const char *fmt;
   char c;
@@ -665,7 +753,12 @@ parse_printf_args (const char *fmt0, struct printf_args *args,
 	fmt++;
 
       if (*fmt == '$')
-	fmt++;
+	{
+	  if (fmt_check)
+	    return grub_error (GRUB_ERR_BAD_ARGUMENT,
+			       "positional arguments are not supported");
+	  fmt++;
+	}
 
       if (*fmt =='-')
 	fmt++;
@@ -688,17 +781,31 @@ parse_printf_args (const char *fmt0, struct printf_args *args,
       switch (c)
 	{
 	case 'p':
+	  if (*(fmt) == 'G')
+	    ++fmt;
+	  /* Fall through. */
 	case 'x':
 	case 'X':
 	case 'u':
 	case 'd':
+	case 'o':
 	case 'c':
 	case 'C':
 	case 's':
 	  args->count++;
 	  break;
+	case '%':
+	  /* "%%" is the escape sequence to output "%". */
+	  break;
+	default:
+	  if (fmt_check)
+	    return grub_error (GRUB_ERR_BAD_ARGUMENT, "unexpected format");
+	  break;
 	}
     }
+
+  if (fmt_check && args->count > max_args)
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, "too many arguments");
 
   if (args->count <= ARRAY_SIZE (args->prealloc))
     args->ptr = args->prealloc;
@@ -707,6 +814,9 @@ parse_printf_args (const char *fmt0, struct printf_args *args,
       args->ptr = grub_calloc (args->count, sizeof (args->ptr[0]));
       if (!args->ptr)
 	{
+	  if (fmt_check)
+	    return grub_errno;
+
 	  grub_errno = GRUB_ERR_NONE;
 	  args->ptr = args->prealloc;
 	  args->count = ARRAY_SIZE (args->prealloc);
@@ -777,6 +887,7 @@ parse_printf_args (const char *fmt0, struct printf_args *args,
 	{
 	case 'x':
 	case 'X':
+	case 'o':
 	case 'u':
 	  args->ptr[curn].type = UNSIGNED_INT + longfmt;
 	  break;
@@ -784,11 +895,17 @@ parse_printf_args (const char *fmt0, struct printf_args *args,
 	  args->ptr[curn].type = INT + longfmt;
 	  break;
 	case 'p':
-	case 's':
 	  if (sizeof (void *) == sizeof (long long))
 	    args->ptr[curn].type = UNSIGNED_LONGLONG;
 	  else
 	    args->ptr[curn].type = UNSIGNED_INT;
+	  if (*(fmt) == 'G') {
+	    args->ptr[curn].type = GUID;
+	    ++fmt;
+	  }
+	  break;
+	case 's':
+	  args->ptr[curn].type = STRING;
 	  break;
 	case 'C':
 	case 'c':
@@ -796,6 +913,16 @@ parse_printf_args (const char *fmt0, struct printf_args *args,
 	  break;
 	}
     }
+
+  return GRUB_ERR_NONE;
+}
+
+static void
+parse_printf_args (const char *fmt0, struct printf_args *args, va_list args_in)
+{
+  grub_size_t n;
+
+  parse_printf_arg_fmt (fmt0, args, 0, 0);
 
   for (n = 0; n < args->count; n++)
     switch (args->ptr[n].type)
@@ -816,6 +943,13 @@ parse_printf_args (const char *fmt0, struct printf_args *args,
       case UNSIGNED_LONGLONG:
 	args->ptr[n].ll = va_arg (args_in, long long);
 	break;
+      case STRING:
+      case GUID:
+	if (sizeof (void *) == sizeof (long long))
+	  args->ptr[n].ll = va_arg (args_in, long long);
+	else
+	  args->ptr[n].ll = va_arg (args_in, unsigned int);
+	break;
       }
 }
 
@@ -826,6 +960,27 @@ write_char (char *str, grub_size_t *count, grub_size_t max_len, unsigned char ch
     str[*count] = ch;
 
   (*count)++;
+}
+
+static void
+write_number (char *str, grub_size_t *count, grub_size_t max_len, grub_size_t format1,
+	     char rightfill, char zerofill, char c, long long value)
+{
+  char tmp[32];
+  const char *p = tmp;
+  grub_size_t len;
+  grub_size_t fill;
+
+  len = grub_lltoa (tmp, c, value) - tmp;
+  fill = len < format1 ? format1 - len : 0;
+  if (! rightfill)
+    while (fill--)
+      write_char (str, count, max_len, zerofill);
+  while (*p)
+    write_char (str, count, max_len, *p++);
+  if (rightfill)
+    while (fill--)
+      write_char (str, count, max_len, zerofill);
 }
 
 static int
@@ -849,7 +1004,7 @@ grub_vsnprintf_real (char *str, grub_size_t max_len, const char *fmt0,
 
       if (c != '%')
 	{
-	  write_char (str, &count, max_len,c);
+	  write_char (str, &count, max_len, c);
 	  continue;
 	}
 
@@ -897,7 +1052,7 @@ grub_vsnprintf_real (char *str, grub_size_t max_len, const char *fmt0,
 
       if (c == '%')
 	{
-	  write_char (str, &count, max_len,c);
+	  write_char (str, &count, max_len, c);
 	  n--;
 	  continue;
 	}
@@ -910,35 +1065,44 @@ grub_vsnprintf_real (char *str, grub_size_t max_len, const char *fmt0,
       switch (c)
 	{
 	case 'p':
-	  write_char (str, &count, max_len, '0');
-	  write_char (str, &count, max_len, 'x');
-	  c = 'x';
+	  if (*(fmt) == 'G')
+	    {
+	      ++fmt;
+	      grub_packed_guid_t *guid = (grub_packed_guid_t *)(grub_addr_t) curarg;
+	      write_number (str, &count, max_len, 8, 0, '0', 'x', guid->data1);
+	      write_char (str, &count, max_len, '-');
+	      write_number (str, &count, max_len, 4, 0, '0', 'x', guid->data2);
+	      write_char (str, &count, max_len, '-');
+	      write_number (str, &count, max_len, 4, 0, '0', 'x', guid->data3);
+	      write_char (str, &count, max_len, '-');
+	      write_number (str, &count, max_len, 2, 0, '0', 'x', guid->data4[0]);
+	      write_number (str, &count, max_len, 2, 0, '0', 'x', guid->data4[1]);
+	      write_char (str, &count, max_len, '-');
+	      write_number (str, &count, max_len, 2, 0, '0', 'x', guid->data4[2]);
+	      write_number (str, &count, max_len, 2, 0, '0', 'x', guid->data4[3]);
+	      write_number (str, &count, max_len, 2, 0, '0', 'x', guid->data4[4]);
+	      write_number (str, &count, max_len, 2, 0, '0', 'x', guid->data4[5]);
+	      write_number (str, &count, max_len, 2, 0, '0', 'x', guid->data4[6]);
+	      write_number (str, &count, max_len, 2, 0, '0', 'x', guid->data4[7]);
+	      break;
+	    }
+	  else
+	    {
+	      write_char (str, &count, max_len, '0');
+	      write_char (str, &count, max_len, 'x');
+	      c = 'x';
+	    }
 	  /* Fall through. */
 	case 'x':
 	case 'X':
 	case 'u':
 	case 'd':
-	  {
-	    char tmp[32];
-	    const char *p = tmp;
-	    grub_size_t len;
-	    grub_size_t fill;
-
-	    len = grub_lltoa (tmp, c, curarg) - tmp;
-	    fill = len < format1 ? format1 - len : 0;
-	    if (! rightfill)
-	      while (fill--)
-		write_char (str, &count, max_len, zerofill);
-	    while (*p)
-	      write_char (str, &count, max_len, *p++);
-	    if (rightfill)
-	      while (fill--)
-		write_char (str, &count, max_len, zerofill);
-	  }
+	case 'o':
+	  write_number (str, &count, max_len, format1, rightfill, zerofill, c, curarg);
 	  break;
 
 	case 'c':
-	  write_char (str, &count, max_len,curarg & 0xff);
+	  write_char (str, &count, max_len, curarg & 0xff);
 	  break;
 
 	case 'C':
@@ -974,10 +1138,10 @@ grub_vsnprintf_real (char *str, grub_size_t max_len, const char *fmt0,
 		mask = 0;
 	      }
 
-	    write_char (str, &count, max_len,mask | (code >> shift));
+	    write_char (str, &count, max_len, mask | (code >> shift));
 
 	    for (shift -= 6; shift >= 0; shift -= 6)
-	      write_char (str, &count, max_len,0x80 | (0x3f & (code >> shift)));
+	      write_char (str, &count, max_len, 0x80 | (0x3f & (code >> shift)));
 	  }
 	  break;
 
@@ -998,7 +1162,7 @@ grub_vsnprintf_real (char *str, grub_size_t max_len, const char *fmt0,
 		write_char (str, &count, max_len, zerofill);
 
 	    for (i = 0; i < len; i++)
-	      write_char (str, &count, max_len,*p++);
+	      write_char (str, &count, max_len, *p++);
 
 	    if (rightfill)
 	      while (fill--)
@@ -1008,7 +1172,7 @@ grub_vsnprintf_real (char *str, grub_size_t max_len, const char *fmt0,
 	  break;
 
 	default:
-	  write_char (str, &count, max_len,c);
+	  write_char (str, &count, max_len, c);
 	  break;
 	}
     }
@@ -1037,7 +1201,7 @@ grub_vsnprintf (char *str, grub_size_t n, const char *fmt, va_list ap)
 
   free_printf_args (&args);
 
-  return ret < n ? ret : n;
+  return ret;
 }
 
 int
@@ -1097,12 +1261,48 @@ grub_xasprintf (const char *fmt, ...)
   return ret;
 }
 
+grub_err_t
+grub_printf_fmt_check (const char *fmt, const char *fmt_expected)
+{
+  struct printf_args args_expected, args_fmt;
+  grub_err_t ret;
+  grub_size_t n;
+
+  if (fmt == NULL || fmt_expected == NULL)
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, "invalid format");
+
+  ret = parse_printf_arg_fmt (fmt_expected, &args_expected, 1, GRUB_SIZE_MAX);
+  if (ret != GRUB_ERR_NONE)
+    return ret;
+
+  /* Limit parsing to the number of expected arguments. */
+  ret = parse_printf_arg_fmt (fmt, &args_fmt, 1, args_expected.count);
+  if (ret != GRUB_ERR_NONE)
+    {
+      free_printf_args (&args_expected);
+      return ret;
+    }
+
+  for (n = 0; n < args_fmt.count; n++)
+    if (args_fmt.ptr[n].type != args_expected.ptr[n].type)
+     {
+	ret = grub_error (GRUB_ERR_BAD_ARGUMENT, "arguments types do not match");
+	break;
+     }
+
+  free_printf_args (&args_expected);
+  free_printf_args (&args_fmt);
+
+  return ret;
+}
+
+
 /* Abort GRUB. This function does not return.  */
-static void __attribute__ ((noreturn))
+void __attribute__ ((noreturn))
 grub_abort (void)
 {
   grub_printf ("\nAborted.");
-  
+
 #ifndef GRUB_UTIL
   if (grub_term_inputs)
 #endif
@@ -1127,6 +1327,37 @@ grub_fatal (const char *fmt, ...)
 
   grub_abort ();
 }
+
+grub_ssize_t
+grub_utf8_to_utf16_alloc (const char *str8, grub_uint16_t **utf16_msg, grub_uint16_t **last_position)
+{
+  grub_size_t len;
+  grub_size_t len16;
+
+  len = grub_strlen (str8);
+
+  /* Check for integer overflow */
+  if (len > GRUB_SSIZE_MAX / GRUB_MAX_UTF16_PER_UTF8 - 1)
+    {
+      grub_error (GRUB_ERR_BAD_ARGUMENT, N_("string too long"));
+      *utf16_msg = NULL;
+      return -1;
+    }
+
+  len16 = len * GRUB_MAX_UTF16_PER_UTF8;
+
+  *utf16_msg = grub_calloc (len16 + 1, sizeof (*utf16_msg[0]));
+  if (*utf16_msg == NULL)
+    return -1;
+
+  len16 = grub_utf8_to_utf16 (*utf16_msg, len16, (grub_uint8_t *) str8, len, NULL);
+
+  if (last_position != NULL)
+    *last_position = *utf16_msg + len16;
+
+  return len16;
+}
+
 
 #if BOOT_TIME_STATS
 
@@ -1157,7 +1388,7 @@ grub_real_boot_time (const char *file,
   n->next = 0;
 
   va_start (args, fmt);
-  n->msg = grub_xvasprintf (fmt, args);    
+  n->msg = grub_xvasprintf (fmt, args);
   va_end (args);
 
   *boot_time_last = n;

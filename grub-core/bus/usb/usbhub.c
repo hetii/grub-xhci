@@ -95,7 +95,8 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
   if (i == GRUB_USBHUB_MAX_DEVICES)
     {
       grub_error (GRUB_ERR_IO, "can't assign address to USB device");
-      for (i = 0; i < 8; i++) {
+
+      for (i = 0; i < GRUB_USB_MAX_CONF; i++) {
 	int currif;
 
 	for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
@@ -103,6 +104,7 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
 
 	grub_free (dev->config[i].descconf);
       }
+
       grub_free (dev);
       return NULL;
     }
@@ -115,7 +117,8 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
 			      i, 0, 0, NULL);
   if (err)
     {
-      for (i = 0; i < 8; i++) {
+
+      for (i = 0; i < GRUB_USB_MAX_CONF; i++) {
 	int currif;
 
 	for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
@@ -123,6 +126,7 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
 
 	grub_free (dev->config[i].descconf);
       }
+
       grub_free (dev);
       return NULL;
     }
@@ -140,11 +144,11 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
   grub_millisleep (2);
 
   grub_boot_time ("Probing USB device driver");
-  
+
   grub_usb_device_attach (dev);
 
   grub_boot_time ("Attached USB device");
-  
+
   return dev;
 }
 
@@ -379,7 +383,7 @@ grub_usb_controller_dev_register (grub_usb_controller_dev_t usb)
 
 		speed = hub->controller->dev->detect_dev (hub->controller, portno,
 							  &changed);
-      
+
 		if (hub->ports[portno].state == PORT_STATE_NORMAL
 		    && speed != GRUB_USB_SPEED_NONE)
 		  {
@@ -483,7 +487,7 @@ wait_power_nonroot_hub (grub_usb_device_t dev)
   grub_usb_err_t err;
   int continue_waiting = 0;
   unsigned i;
-  
+
   for (i = 1; i <= dev->nports; i++)
     if (dev->ports[i - 1].state == PORT_STATE_WAITING_FOR_STABLE_POWER)
       {
@@ -625,7 +629,7 @@ poll_nonroot_hub (grub_usb_device_t dev)
 
 	  detach_device (dev->children[i - 1]);
 	  dev->children[i - 1] = NULL;
-      	    
+
 	  /* Connected and status of connection changed ? */
 	  if (status & GRUB_USB_HUB_STATUS_PORT_CONNECTED)
 	    {
@@ -706,7 +710,6 @@ poll_nonroot_hub (grub_usb_device_t dev)
 		    split_hubaddr = dev->split_hubaddr;
 		  }
 
-
 	      /* Add the device and assign a device address to it.  */
 	      next_dev = grub_usb_hub_add_dev (&dev->controller, speed,
 					       split_hubport, split_hubaddr, dev->root_port,
@@ -772,12 +775,12 @@ grub_usb_poll_devices (int wait_for_completion)
   while (1)
     {
       rescan = 0;
-      
+
       /* We should check changes of non-root hubs too. */
       for (i = 0; i < GRUB_USBHUB_MAX_DEVICES; i++)
 	{
 	  grub_usb_device_t dev = grub_usb_devs[i];
-	  
+
 	  if (dev && dev->descdev.class == 0x09)
 	    poll_nonroot_hub (dev);
 	}
@@ -788,7 +791,7 @@ grub_usb_poll_devices (int wait_for_completion)
 	  for (i = 0; i < GRUB_USBHUB_MAX_DEVICES; i++)
 	    {
 	      grub_usb_device_t dev = grub_usb_devs[i];
-	    
+
 	      if (dev && dev->descdev.class == 0x09)
 		continue_waiting = continue_waiting || wait_power_nonroot_hub (dev);
 	    }

@@ -43,6 +43,7 @@ static const struct grub_arg_option options[] =
     /* TRANSLATORS: The disk is simply removed from the list of available ones,
        not wiped, avoid to scare user.  */
     {"delete", 'd', 0, N_("Delete the specified loopback drive."), 0, 0},
+    {"decompress", 'D', 0, N_("Transparently decompress backing file."), 0, 0},
     {0, 0, 0, 0, 0, 0}
   };
 
@@ -79,6 +80,7 @@ grub_cmd_loopback (grub_extcmd_context_t ctxt, int argc, char **args)
 {
   struct grub_arg_list *state = ctxt->state;
   grub_file_t file;
+  enum grub_file_type type = GRUB_FILE_TYPE_LOOPBACK;
   struct grub_loopback *newdev;
   grub_err_t ret;
 
@@ -87,28 +89,22 @@ grub_cmd_loopback (grub_extcmd_context_t ctxt, int argc, char **args)
 
   /* Check if `-d' was used.  */
   if (state[0].set)
-      return delete_loopback (args[0]);
+    return delete_loopback (args[0]);
+
+  if (!state[1].set)
+    type |= GRUB_FILE_TYPE_NO_DECOMPRESS;
 
   if (argc < 2)
     return grub_error (GRUB_ERR_BAD_ARGUMENT, N_("filename expected"));
 
-  file = grub_file_open (args[1], GRUB_FILE_TYPE_LOOPBACK
-			 | GRUB_FILE_TYPE_NO_DECOMPRESS);
-  if (! file)
-    return grub_errno;
-
-  /* First try to replace the old device.  */
+  /* Check that a device with requested name does not already exist. */
   for (newdev = loopback_list; newdev; newdev = newdev->next)
     if (grub_strcmp (newdev->devname, args[0]) == 0)
-      break;
+      return grub_error (GRUB_ERR_BAD_ARGUMENT, "device name already exists");
 
-  if (newdev)
-    {
-      grub_file_close (newdev->file);
-      newdev->file = file;
-
-      return 0;
-    }
+  file = grub_file_open (args[1], type);
+  if (! file)
+    return grub_errno;
 
   /* Unable to replace it, make a new entry.  */
   newdev = grub_malloc (sizeof (struct grub_loopback));
@@ -234,7 +230,7 @@ static grub_extcmd_t cmd;
 GRUB_MOD_INIT(loopback)
 {
   cmd = grub_register_extcmd ("loopback", grub_cmd_loopback, 0,
-			      N_("[-d] DEVICENAME FILE."),
+			      N_("[-d] [-D] DEVICENAME FILE."),
 			      /* TRANSLATORS: The file itself is not destroyed
 				 or transformed into drive.  */
 			      N_("Make a virtual drive from a file."), options);

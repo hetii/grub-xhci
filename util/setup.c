@@ -254,7 +254,8 @@ SETUP (const char *dir,
        const char *boot_file, const char *core_file,
        const char *dest, int force,
        int fs_probe, int allow_floppy,
-       int add_rs_codes __attribute__ ((unused))) /* unused on sparc64 */
+       int add_rs_codes __attribute__ ((unused)), /* unused on sparc64 */
+       int warn_small)
 {
   char *core_path;
   char *boot_img, *core_img, *boot_path;
@@ -349,7 +350,7 @@ SETUP (const char *dir,
 	    root = drive;
 	    continue;
 	  }
-	grub_device_close (try_dev);	
+	grub_device_close (try_dev);
 	free (drive);
       }
     if (!root_dev)
@@ -378,7 +379,7 @@ SETUP (const char *dir,
     tmp_img = xmalloc (GRUB_DISK_SECTOR_SIZE);
     if (grub_disk_read (dest_dev->disk, 0, 0, GRUB_DISK_SECTOR_SIZE, tmp_img))
       grub_util_error ("%s", grub_errmsg);
-    
+
     boot_drive_check = (grub_uint8_t *) (boot_img
 					  + GRUB_BOOT_MACHINE_DRIVE_CHECK);
     /* Copy the possible DOS BPB.  */
@@ -530,7 +531,7 @@ SETUP (const char *dir,
 				 GRUB_EMBED_PCBIOS, &sectors);
     else if (ctx.dest_partmap)
       err = ctx.dest_partmap->embed (dest_dev->disk, &nsec, maxsec,
-				     GRUB_EMBED_PCBIOS, &sectors);
+				     GRUB_EMBED_PCBIOS, &sectors, warn_small);
     else
       err = fs->fs_embed (dest_dev, &nsec, maxsec,
 			  GRUB_EMBED_PCBIOS, &sectors);
@@ -540,7 +541,7 @@ SETUP (const char *dir,
 			  N_("Your embedding area is unusually small.  "
 			     "core.img won't fit in it."));
       }
-    
+
     if (err)
       {
 	grub_util_warn ("%s", grub_errmsg);
@@ -555,7 +556,7 @@ SETUP (const char *dir,
     while (bl.block->len)
       {
 	grub_memset (bl.block, 0, sizeof (*bl.block));
-      
+
 	bl.block--;
 
 	if ((char *) bl.block <= core_img)
@@ -616,7 +617,7 @@ SETUP (const char *dir,
 						     - sizeof (*bl.block));
 #if GRUB_SETUP_BIOS
     grub_size_t no_rs_length;
-    no_rs_length = grub_target_to_host16 
+    no_rs_length = grub_target_to_host16
       (grub_get_unaligned16 (core_img
 			     + GRUB_DISK_SECTOR_SIZE
 			     + GRUB_KERNEL_I386_PC_NO_REED_SOLOMON_LENGTH));
@@ -841,7 +842,7 @@ unable_to_embed:
 	ptr += cur;
 	len -= cur;
 	bl.block--;
-	
+
 	if ((char *) bl.block <= core_img)
 	  grub_util_error ("%s", _("no terminator in the core image"));
       }

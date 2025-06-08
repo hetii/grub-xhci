@@ -133,7 +133,7 @@ get_targets_string (void)
 }
 
 static int
-print_gpt_guid (grub_gpt_part_guid_t guid)
+print_gpt_guid (grub_guid_t guid)
 {
   guid.data1 = grub_le_to_cpu32 (guid.data1);
   guid.data2 = grub_le_to_cpu16 (guid.data2);
@@ -398,7 +398,7 @@ probe (const char *path, char **device_names, char delim)
 	  if (! dev || !dev->disk)
 	    grub_util_error ("%s", grub_errmsg);
 
-	  dsize = grub_disk_get_size (dev->disk);
+	  dsize = grub_disk_native_sectors (dev->disk);
 	  for (addr = 0; addr < dsize;
 	       addr += sizeof (buffer) / GRUB_DISK_SECTOR_SIZE)
 	    {
@@ -433,7 +433,7 @@ probe (const char *path, char **device_names, char delim)
       dev = grub_device_open (drives_names[0]);
       if (! dev)
 	grub_util_error ("%s", grub_errmsg);
-      
+
       fs = grub_fs_probe (dev);
       if (! fs)
 	grub_util_error ("%s", grub_errmsg);
@@ -543,7 +543,7 @@ probe (const char *path, char **device_names, char delim)
 	  else
 	    printf ("\n");
 	}
-      
+
       else if ((print == PRINT_COMPATIBILITY_HINT || print == PRINT_BIOS_HINT
 	   || print == PRINT_IEEE1275_HINT || print == PRINT_BAREMETAL_HINT
 	   || print == PRINT_EFI_HINT || print == PRINT_ARC_HINT)
@@ -732,7 +732,8 @@ static struct argp_option options[] = {
   {"device-map",  'm', N_("FILE"), 0,
    N_("use FILE as the device map [default=%s]"), 0},
   {"target",  't', N_("TARGET"), 0, 0, 0},
-  {"verbose",     'v', 0,      0, N_("print verbose messages."), 0},
+  {"verbose",     'v', 0,      0,
+   N_("print verbose messages (pass twice to enable debug printing)."), 0},
   {0, '0', 0, 0, N_("separate items in output using ASCII NUL characters"), 0},
   { 0, 0, 0, 0, 0, 0 }
 };

@@ -311,7 +311,6 @@ grub_cmd_setpci (grub_extcmd_context_t ctxt, int argc, char **argv)
 	  write_mask = grub_strtoul (ptr, &ptr, 16);
 	  if (grub_errno)
 	    return grub_errno;
-	  write_mask = 0xffffffff;
 	}
       regwrite &= write_mask;
     }
@@ -328,10 +327,10 @@ static grub_extcmd_t cmd;
 
 GRUB_MOD_INIT(setpci)
 {
-  cmd = grub_register_extcmd ("setpci", grub_cmd_setpci, 0,
-			      N_("[-s POSITION] [-d DEVICE] [-v VAR] "
-				 "REGISTER[=VALUE[:MASK]]"),
-			      N_("Manipulate PCI devices."), options);
+  cmd = grub_register_extcmd_lockdown ("setpci", grub_cmd_setpci, 0,
+				       N_("[-s POSITION] [-d DEVICE] [-v VAR] "
+					  "REGISTER[=VALUE[:MASK]]"),
+				       N_("Manipulate PCI devices."), options);
 }
 
 GRUB_MOD_FINI(setpci)

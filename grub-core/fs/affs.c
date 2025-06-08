@@ -321,7 +321,6 @@ static int
 grub_affs_create_node (grub_fshelp_node_t dir,
 		       grub_fshelp_iterate_dir_hook_t hook, void *hook_data,
 		       struct grub_fshelp_node **node,
-		       grub_uint32_t **hashtable,
 		       grub_uint32_t block, const struct grub_affs_file *fil)
 {
   struct grub_affs_data *data = dir->data;
@@ -332,10 +331,7 @@ grub_affs_create_node (grub_fshelp_node_t dir,
 
   *node = grub_zalloc (sizeof (**node));
   if (!*node)
-    {
-      grub_free (*hashtable);
-      return 1;
-    }
+    return 1;
 
   (*node)->data = data;
   (*node)->block = block;
@@ -345,7 +341,7 @@ grub_affs_create_node (grub_fshelp_node_t dir,
   if (len > sizeof (fil->name))
     len = sizeof (fil->name);
   *grub_latin1_to_utf8 (name_u8, fil->name, len) = '\0';
-  
+
   (*node)->di = *fil;
   for (nest = 0; nest < 8; nest++)
     {
@@ -370,23 +366,31 @@ grub_affs_create_node (grub_fshelp_node_t dir,
 				  GRUB_DISK_SECTOR_SIZE - GRUB_AFFS_FILE_LOCATION,
 				  sizeof ((*node)->di), (char *) &(*node)->di);
 	    if (err)
-	      return 1;
+	      {
+		grub_free (*node);
+		return 1;
+	      }
 	    continue;
 	  }
 	default:
-	  return 0;
+	  {
+	    grub_free (*node);
+	    return 0;
+	  }
 	}
       break;
     }
 
   if (nest == 8)
-    return 0;
+    {
+      grub_free (*node);
+      return 0;
+    }
 
   type |= GRUB_FSHELP_CASE_INSENSITIVE;
 
   if (hook ((char *) name_u8, type, *node, hook_data))
     {
-      grub_free (*hashtable);
       *node = 0;
       return 1;
     }
@@ -400,23 +404,20 @@ grub_affs_iterate_dir (grub_fshelp_node_t dir,
 {
   unsigned int i;
   struct grub_affs_file file;
-  struct grub_fshelp_node *node = 0;
+  struct grub_fshelp_node *node, *orig_node;
   struct grub_affs_data *data = dir->data;
   grub_uint32_t *hashtable;
 
   /* Create the directory entries for `.' and `..'.  */
-  node = grub_zalloc (sizeof (*node));
+  node = orig_node = grub_zalloc (sizeof (*node));
   if (!node)
     return 1;
-    
+
   *node = *dir;
   if (hook (".", GRUB_FSHELP_DIR, node, hook_data))
     return 1;
   if (dir->parent)
     {
-      node = grub_zalloc (sizeof (*node));
-      if (!node)
-	return 1;
       *node = *dir->parent;
       if (hook ("..", GRUB_FSHELP_DIR, node, hook_data))
 	return 1;
@@ -454,19 +455,20 @@ grub_affs_iterate_dir (grub_fshelp_node_t dir,
 	  if (grub_errno)
 	    goto fail;
 
-	  if (grub_affs_create_node (dir, hook, hook_data, &node, &hashtable,
-				     next, &file))
-	    return 1;
+	  if (grub_affs_create_node (dir, hook, hook_data, &node, next, &file))
+	    {
+	      /* Node has been replaced in function. */
+	      grub_free (orig_node);
+	      grub_free (hashtable);
+	      return 1;
+	    }
 
 	  next = grub_be_to_cpu32 (file.next);
 	}
     }
 
-  grub_free (hashtable);
-  return 0;
-
  fail:
-  grub_free (node);
+  grub_free (orig_node);
   grub_free (hashtable);
   return 0;
 }
@@ -643,7 +645,7 @@ grub_affs_label (grub_device_t device, char **label)
 }
 
 static grub_err_t
-grub_affs_mtime (grub_device_t device, grub_int32_t *t)
+grub_affs_mtime (grub_device_t device, grub_int64_t *t)
 {
   struct grub_affs_data *data;
   grub_disk_t disk = device->disk;

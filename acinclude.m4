@@ -305,9 +305,9 @@ fi
 ])
 
 
-dnl Check if the C compiler supports `-fstack-protector'.
+dnl Check if the C compiler supports the stack protector
 AC_DEFUN([grub_CHECK_STACK_PROTECTOR],[
-[# Smashing stack protector.
+[# Stack smashing protector.
 ssp_possible=yes]
 AC_MSG_CHECKING([whether `$CC' accepts `-fstack-protector'])
 # Is this a reliable test case?
@@ -322,6 +322,40 @@ if eval "$ac_compile -S -fstack-protector -o conftest.s" 2> /dev/null; then]
   rm -f conftest.s
 else
   ssp_possible=no]
+  AC_MSG_RESULT([no])
+[fi]
+[# Strong stack smashing protector.
+ssp_strong_possible=yes]
+AC_MSG_CHECKING([whether `$CC' accepts `-fstack-protector-strong'])
+# Is this a reliable test case?
+AC_LANG_CONFTEST([AC_LANG_SOURCE([[
+void foo (void) { volatile char a[8]; a[3]; }
+]])])
+[# `$CC -c -o ...' might not be portable.  But, oh, well...  Is calling
+# `ac_compile' like this correct, after all?
+if eval "$ac_compile -S -fstack-protector-strong -o conftest.s" 2> /dev/null; then]
+  AC_MSG_RESULT([yes])
+  [# Should we clear up other files as well, having called `AC_LANG_CONFTEST'?
+  rm -f conftest.s
+else
+  ssp_strong_possible=no]
+  AC_MSG_RESULT([no])
+[fi]
+[# Global stack smashing protector.
+ssp_global_possible=yes]
+AC_MSG_CHECKING([whether `$CC' accepts `-mstack-protector-guard=global'])
+# Is this a reliable test case?
+AC_LANG_CONFTEST([AC_LANG_SOURCE([[
+void foo (void) { volatile char a[8]; a[3]; }
+]])])
+[# `$CC -c -o ...' might not be portable.  But, oh, well...  Is calling
+# `ac_compile' like this correct, after all?
+if eval "$ac_compile -S -fstack-protector -mstack-protector-guard=global -o conftest.s" 2> /dev/null; then]
+  AC_MSG_RESULT([yes])
+  [# Should we clear up other files as well, having called `AC_LANG_CONFTEST'?
+  rm -f conftest.s
+else
+  ssp_global_possible=no]
   AC_MSG_RESULT([no])
 [fi]
 ])
@@ -396,7 +430,7 @@ link_nopie_needed=no]
 AC_MSG_CHECKING([whether linker needs disabling of PIE to work])
 AC_LANG_CONFTEST([AC_LANG_SOURCE([[]])])
 
-[if eval "$ac_compile -Wl,-r,-d -nostdlib -Werror -o conftest.o" 2> /dev/null; then]
+[if eval "$ac_compile -Wl,-r -nostdlib -Werror -o conftest.o" 2> /dev/null; then]
   AC_MSG_RESULT([no])
   [# Should we clear up other files as well, having called `AC_LANG_CONFTEST'?
   rm -f conftest.o

@@ -215,7 +215,7 @@ find_file (char *currpath,
 	break;
 
       push_node (ctx, foundnode, foundtype);
- 
+
       /* Read in the symlink and follow it.  */
       if (ctx->currnode->type == GRUB_FSHELP_SYMLINK)
 	{
@@ -326,7 +326,7 @@ grub_fshelp_find_file (const char *path, grub_fshelp_node_t rootnode,
 		       enum grub_fshelp_filetype expecttype)
 {
   return grub_fshelp_find_file_real (path, rootnode, foundnode,
-				     iterate_dir, NULL, 
+				     iterate_dir, NULL,
 				     read_symlink, expecttype);
 
 }
@@ -339,7 +339,7 @@ grub_fshelp_find_file_lookup (const char *path, grub_fshelp_node_t rootnode,
 			      enum grub_fshelp_filetype expecttype)
 {
   return grub_fshelp_find_file_real (path, rootnode, foundnode,
-				     NULL, lookup_file, 
+				     NULL, lookup_file,
 				     read_symlink, expecttype);
 
 }
@@ -361,6 +361,18 @@ grub_fshelp_read_file (grub_disk_t disk, grub_fshelp_node_t node,
 {
   grub_disk_addr_t i, blockcnt;
   int blocksize = 1 << (log2blocksize + GRUB_DISK_SECTOR_BITS);
+
+  /*
+   * Catch blatantly invalid log2blocksize. We could be a lot stricter, but
+   * this is the most permissive we can be before we start to see integer
+   * overflow/underflow issues.
+   */
+  if (log2blocksize + GRUB_DISK_SECTOR_BITS >= 31)
+    {
+      grub_error (GRUB_ERR_OUT_OF_RANGE,
+		  N_("blocksize too large"));
+      return -1;
+    }
 
   if (pos > filesize)
     {

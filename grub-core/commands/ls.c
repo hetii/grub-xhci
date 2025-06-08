@@ -70,7 +70,7 @@ grub_ls_list_devices (int longlist)
     FOR_NET_APP_LEVEL (proto)
     {
       if (first)
-	grub_puts_ (N_ ("Network protocols:"));
+	grub_puts_ (N_("Network protocols:"));
       first = 0;
       grub_printf ("%s ", proto->name);
     }
@@ -131,20 +131,20 @@ print_files_long (const char *filename, const struct grub_dirhook_info *info,
 	 should be reported as directories.  */
       file = grub_file_open (pathname, GRUB_FILE_TYPE_GET_SIZE
 			     | GRUB_FILE_TYPE_NO_DECOMPRESS);
-      if (! file)
+      if (file)
 	{
-	  grub_errno = 0;
-	  grub_free (pathname);
-	  return 0;
-	}
-
-      if (! ctx->human)
-	grub_printf ("%-12llu", (unsigned long long) file->size);
-      else
-	grub_printf ("%-12s", grub_get_human_size (file->size,
+	  if (! ctx->human)
+	    grub_printf ("%-12llu", (unsigned long long) file->size);
+	  else
+	    grub_printf ("%-12s", grub_get_human_size (file->size,
 						   GRUB_HUMAN_SIZE_SHORT));
-      grub_file_close (file);
+	  grub_file_close (file);
+	}
+      else
+	grub_xputs ("????????????");
+
       grub_free (pathname);
+      grub_errno = GRUB_ERR_NONE;
     }
   else
     grub_printf ("%-12s", _("DIR"));
@@ -196,7 +196,7 @@ grub_ls_list_files (char *dirname, int longlist, int all, int human)
       goto fail;
     }
 
-  if (! *path)
+  if (! *path && device_name)
     {
       if (grub_errno == GRUB_ERR_UNKNOWN_FS)
 	grub_errno = GRUB_ERR_NONE;
@@ -242,8 +242,8 @@ grub_ls_list_files (char *dirname, int longlist, int all, int human)
 	  grub_file_close (file);
 
 	  p = grub_strrchr (dirname, '/') + 1;
-	  dirname = grub_strndup (dirname, p - dirname);
-	  if (! dirname)
+	  ctx.dirname = grub_strndup (dirname, p - dirname);
+	  if (ctx.dirname == NULL)
 	    goto fail;
 
 	  all = 1;
@@ -253,7 +253,7 @@ grub_ls_list_files (char *dirname, int longlist, int all, int human)
 	  else
 	    print_files (p, &info, &ctx);
 
-	  grub_free (dirname);
+	  grub_free (ctx.dirname);
 	}
 
       if (grub_errno == GRUB_ERR_NONE)

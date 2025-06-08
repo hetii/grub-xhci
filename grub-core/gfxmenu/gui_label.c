@@ -160,7 +160,7 @@ static void
 label_set_state (void *vself, int visible, int start __attribute__ ((unused)),
 		 int current, int end __attribute__ ((unused)))
 {
-  grub_gui_label_t self = vself;  
+  grub_gui_label_t self = vself;
   self->value = -current;
   self->visible = visible;
   grub_free (self->text);
@@ -193,6 +193,10 @@ label_set_property (void *vself, const char *name, const char *value)
 	   else if (grub_strcmp (value, "@KEYMAP_SHORT@") == 0)
 	    value = _("enter: boot, `e': options, `c': cmd-line");
 	   /* FIXME: Add more templates here if needed.  */
+
+	  if (grub_printf_fmt_check(value, "%d") != GRUB_ERR_NONE)
+	    value = ""; /* Unsupported format. */
+
 	  self->template = grub_strdup (value);
 	  self->text = grub_xasprintf (value, self->value);
 	}

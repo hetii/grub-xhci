@@ -25,6 +25,7 @@
 #include <grub/efi/efi.h>
 #include <grub/efi/fdtload.h>
 #include <grub/efi/memory.h>
+#include <grub/cpu/efi/memory.h>
 
 static void *loaded_fdt;
 static void *fdt;
@@ -60,7 +61,10 @@ grub_fdt_load (grub_size_t additional_size)
   size += additional_size;
 
   grub_dprintf ("linux", "allocating %d bytes for fdt\n", size);
-  fdt = grub_efi_allocate_any_pages (GRUB_EFI_BYTES_TO_PAGES (size));
+  fdt = grub_efi_allocate_pages_real (GRUB_EFI_MAX_USABLE_ADDRESS,
+				      GRUB_EFI_BYTES_TO_PAGES (size),
+				      GRUB_EFI_ALLOCATE_MAX_ADDRESS,
+				      GRUB_EFI_ACPI_RECLAIM_MEMORY);
   if (!fdt)
     return NULL;
 
@@ -82,16 +86,19 @@ grub_err_t
 grub_fdt_install (void)
 {
   grub_efi_boot_services_t *b;
-  grub_efi_guid_t fdt_guid = GRUB_EFI_DEVICE_TREE_GUID;
+  static grub_guid_t fdt_guid = GRUB_EFI_DEVICE_TREE_GUID;
   grub_efi_status_t status;
 
+  if (fdt == NULL && loaded_fdt == NULL)
+    return GRUB_ERR_NONE;
+
   b = grub_efi_system_table->boot_services;
-  status = b->install_configuration_table (&fdt_guid, fdt);
+  status = b->install_configuration_table (&fdt_guid, fdt ? fdt : loaded_fdt);
   if (status != GRUB_EFI_SUCCESS)
     return grub_error (GRUB_ERR_IO, "failed to install FDT");
 
   grub_dprintf ("fdt", "Installed/updated FDT configuration table @ %p\n",
-		fdt);
+		fdt ? fdt : loaded_fdt);
   return GRUB_ERR_NONE;
 }
 
@@ -165,8 +172,8 @@ static grub_command_t cmd_devicetree;
 GRUB_MOD_INIT (fdt)
 {
   cmd_devicetree =
-    grub_register_command ("devicetree", grub_cmd_devicetree, 0,
-			   N_("Load DTB file."));
+    grub_register_command_lockdown ("devicetree", grub_cmd_devicetree, 0,
+				    N_("Load DTB file."));
 }
 
 GRUB_MOD_FINI (fdt)

@@ -270,7 +270,7 @@ grub_arg_parse (grub_extcmd_t cmd, int argc, char **argv,
 	      for (curshort = arg + 1; *curshort; curshort++)
 		if (!find_short (cmd->options, *curshort))
 		  break;
-	    
+
 	      if (*curshort)
 		{
 		  if (add_arg (&argl, &num, arg) != 0)
@@ -299,6 +299,19 @@ grub_arg_parse (grub_extcmd_t cmd, int argc, char **argv,
 		 it can have an argument value.  */
 	      if (*curshort)
 		{
+		  /*
+		   * Only permit further short opts if this one doesn't
+		   * require a value.
+		   */
+		  if (opt->type != ARG_TYPE_NONE &&
+		      !(opt->flags & GRUB_ARG_OPTION_OPTIONAL))
+		    {
+		      grub_error (GRUB_ERR_BAD_ARGUMENT,
+				  N_("missing mandatory option for `%s'"),
+				  opt->longarg);
+		      goto fail;
+		    }
+
 		  if (parse_option (cmd, opt, 0, usr) || grub_errno)
 		    goto fail;
 		}

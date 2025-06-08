@@ -71,6 +71,7 @@ KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/command.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/device.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/disk.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/dl.h
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/efi/sb.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/env.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/env_private.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/err.h
@@ -79,6 +80,7 @@ KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/fs.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/i18n.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/kernel.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/list.h
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/lockdown.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/misc.h
 if COND_emu
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/compiler-rt-emu.h
@@ -88,8 +90,10 @@ endif
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/mm.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/parser.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/partition.h
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/stack_protector.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/term.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/time.h
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/verify.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/mm_private.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/net.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/memory.h
@@ -149,6 +153,7 @@ endif
 if COND_i386_ieee1275
 KERNEL_HEADER_FILES += $(top_builddir)/include/grub/machine/kernel.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/ieee1275/ieee1275.h
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/ieee1275/alloc.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/terminfo.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/extcmd.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/lib/arg.h
@@ -236,6 +241,7 @@ endif
 
 if COND_powerpc_ieee1275
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/ieee1275/ieee1275.h
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/ieee1275/alloc.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/terminfo.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/extcmd.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/lib/arg.h
@@ -284,6 +290,12 @@ KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/efi/disk.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/acpi.h
 endif
 
+if COND_loongarch64_efi
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/efi/efi.h
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/efi/disk.h
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/acpi.h
+endif
+
 if COND_riscv32_efi
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/efi/efi.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/efi/disk.h
@@ -303,7 +315,11 @@ KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/emu/net.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/emu/hostdisk.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/emu/hostfile.h
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/extcmd.h
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/emu/exec.h
 if COND_GRUB_EMU_SDL
+KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/sdl.h
+endif
+if COND_GRUB_EMU_SDL2
 KERNEL_HEADER_FILES += $(top_srcdir)/include/grub/sdl.h
 endif
 if COND_GRUB_EMU_PCI
@@ -375,8 +391,10 @@ command.lst: $(MARKER_FILES)
 	  b=`basename $$pp .marker`; \
 	  sed -n \
 	    -e "/EXTCOMMAND_LIST_MARKER *( *\"/{s/.*( *\"\([^\"]*\)\".*/*\1: $$b/;p;}" \
+	    -e "/EXTCOMMAND_LOCKDOWN_LIST_MARKER *( *\"/{s/.*( *\"\([^\"]*\)\".*/*\1: $$b/;p;}" \
 	    -e "/P1COMMAND_LIST_MARKER *( *\"/{s/.*( *\"\([^\"]*\)\".*/*\1: $$b/;p;}" \
-	    -e "/COMMAND_LIST_MARKER *( *\"/{s/.*( *\"\([^\"]*\)\".*/\1: $$b/;p;}" $$pp; \
+	    -e "/COMMAND_LIST_MARKER *( *\"/{s/.*( *\"\([^\"]*\)\".*/\1: $$b/;p;}" \
+	    -e "/COMMAND_LOCKDOWN_LIST_MARKER *( *\"/{s/.*( *\"\([^\"]*\)\".*/\1: $$b/;p;}" $$pp; \
 	done) | sort -u > $@
 platform_DATA += command.lst
 CLEANFILES += command.lst
@@ -436,8 +454,8 @@ crypto.lst: $(srcdir)/lib/libgcrypt-grub/cipher/crypto.lst
 platform_DATA += crypto.lst
 CLEANFILES += crypto.lst
 
-syminfo.lst: gensyminfo.sh kernel_syms.lst $(MODULE_FILES)
-	cat kernel_syms.lst > $@.new
+syminfo.lst: gensyminfo.sh kernel_syms.lst $(top_srcdir)/grub-core/extra_deps.lst $(MODULE_FILES)
+	cat kernel_syms.lst $(top_srcdir)/grub-core/extra_deps.lst > $@.new
 	for m in $(MODULE_FILES); do \
 	  sh $< $$m >> $@.new || exit 1; \
 	done
