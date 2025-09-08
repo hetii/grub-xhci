@@ -110,6 +110,7 @@ enum
     GRUB_USB_REQ_SET_INTERFACE = 0x0B,
     GRUB_USB_REQ_SYNC_FRAME = 0x0C
   };
+
 enum
   {
     GRUB_USB_HUB_REQ_SET_HUB_DEPTH = 0x0C,

@@ -152,7 +152,6 @@ grub_usb_device_initialize (grub_usb_device_t dev)
       int currif;
       char *data;
       struct grub_usb_desc *desc;
-      struct grub_usb_desc_endp *endp;
 
       /* First just read the first 4 bytes of the configuration
 	 descriptor, after that it is known how many bytes really have
@@ -202,17 +201,17 @@ grub_usb_device_initialize (grub_usb_device_t dev)
 	    = (struct grub_usb_desc_if *) &data[pos];
 	  pos += dev->config[i].interf[currif].descif->length;
 
-    dev->config[i].interf[currif].descendp = grub_malloc (
+          dev->config[i].interf[currif].descendp = grub_malloc (
             dev->config[i].interf[currif].descif->endpointcnt *
             sizeof(struct grub_usb_desc_endp));
 
-    j = 0;
-	  while (pos < config.totallen)
+          j = 0;
+	  while (pos < config.totallen && j < dev->config[i].interf[currif].descif->endpointcnt)
             {
               desc = (struct grub_usb_desc *)&data[pos];
               if (desc->type == GRUB_USB_DESCRIPTOR_ENDPOINT) {
-                endp = (struct grub_usb_desc_endp *) &data[pos];
-                dev->config[i].interf[currif].descendp[j++] = endp;
+                dev->config[i].interf[currif].descendp[j++] =
+                  (struct grub_usb_desc_endp *) &data[pos];
                 pos += desc->length;
               } else {
                 if (!desc->length)
@@ -230,14 +229,15 @@ grub_usb_device_initialize (grub_usb_device_t dev)
 
  fail:
 
-  for (i = 0; i < GRUB_USB_MAX_CONF; i++) {
-    int currif;
+  for (i = 0; i < GRUB_USB_MAX_CONF; i++)
+    {
+      int currif;
 
-    for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
-      grub_free (dev->config[i].interf[currif].descendp);
+      for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
+          grub_free (dev->config[i].interf[currif].descendp);
 
-    grub_free (dev->config[i].descconf);
-  }
+      grub_free (dev->config[i].descconf);
+    }
 
   return err;
 }
