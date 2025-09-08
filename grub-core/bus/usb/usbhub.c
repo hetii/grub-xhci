@@ -48,6 +48,7 @@ static grub_usb_controller_dev_t grub_usb_list;
    CONTROLLER, the Hub reported that the device speed is SPEED.  */
 static grub_usb_device_t
 grub_usb_hub_add_dev (grub_usb_controller_t controller,
+                      grub_usb_device_t parent,
                       grub_usb_speed_t speed,
                       int split_hubport, int split_hubaddr,
                       int root_portno,
@@ -64,6 +65,7 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
     return NULL;
 
   dev->controller = *controller;
+  dev->parent = parent;
   dev->speed = speed;
   dev->split_hubport = split_hubport;
   dev->split_hubaddr = split_hubaddr;
@@ -74,8 +76,8 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
     err = controller->dev->attach_dev (controller, dev);
     if (err)
       {
-	grub_free (dev);
-	return NULL;
+        grub_free (dev);
+        return NULL;
       }
   }
 
@@ -95,16 +97,15 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
   if (i == GRUB_USBHUB_MAX_DEVICES)
     {
       grub_error (GRUB_ERR_IO, "can't assign address to USB device");
+      for (i = 0; i < GRUB_USB_MAX_CONF; i++)
+        {
+	  int currif;
 
-      for (i = 0; i < GRUB_USB_MAX_CONF; i++) {
-	int currif;
+	  for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
+	    grub_free (dev->config[i].interf[currif].descendp);
 
-	for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
-	  grub_free (dev->config[i].interf[currif].descendp);
-
-	grub_free (dev->config[i].descconf);
-      }
-
+	  grub_free (dev->config[i].descconf);
+        }
       grub_free (dev);
       return NULL;
     }
@@ -117,16 +118,15 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
 			      i, 0, 0, NULL);
   if (err)
     {
+      for (i = 0; i < GRUB_USB_MAX_CONF; i++)
+        {
+          int currif;
 
-      for (i = 0; i < GRUB_USB_MAX_CONF; i++) {
-	int currif;
+	  for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
+	    grub_free (dev->config[i].interf[currif].descendp);
 
-	for (currif = 0; currif < dev->config[i].descconf->numif; currif++)
-	  grub_free (dev->config[i].interf[currif].descendp);
-
-	grub_free (dev->config[i].descconf);
-      }
-
+          grub_free (dev->config[i].descconf);
+        }
       grub_free (dev);
       return NULL;
     }
@@ -152,6 +152,7 @@ grub_usb_hub_add_dev (grub_usb_controller_t controller,
   return dev;
 }
 
+
 static grub_usb_err_t
 grub_usb_set_hub_depth(grub_usb_device_t dev, grub_uint8_t depth)
 {
@@ -176,11 +177,15 @@ grub_usb_add_hub (grub_usb_device_t dev)
   err = grub_usb_control_msg (dev, (GRUB_USB_REQTYPE_IN
 	  		            | GRUB_USB_REQTYPE_CLASS
 			            | GRUB_USB_REQTYPE_TARGET_DEV),
-			      GRUB_USB_REQ_GET_DESCRIPTOR,
+                              GRUB_USB_REQ_GET_DESCRIPTOR,
 			      (req << 8) | 0,
 			      0, sizeof (hubdesc), (char *) &hubdesc);
   if (err)
     return err;
+
+  if (dev->speed == GRUB_USB_SPEED_HIGH)
+      dev->tt_think_time = ((hubdesc.characteristics >> 5) & 0x3);
+
   grub_dprintf ("usb", "Hub descriptor:\n\t\t len:%d, typ:0x%02x, cnt:%d, char:0x%02x, pwg:%d, curr:%d\n",
                 hubdesc.length, hubdesc.type, hubdesc.portcnt,
                 hubdesc.characteristics, hubdesc.pwdgood,
@@ -279,7 +284,7 @@ attach_root_port (struct grub_usb_hub *hub, int portno,
      and full/low speed device connected to OHCI/UHCI needs not
      transaction translation - e.g. hubport and hubaddr should be
      always none (zero) for any device connected to any root hub. */
-  dev = grub_usb_hub_add_dev (hub->controller, speed, 0, 0, portno, 0);
+  dev = grub_usb_hub_add_dev (hub->controller, NULL, speed, 0, 0, portno, 0);
   hub->controller->dev->pending_reset = 0;
   npending--;
   if (! dev)
@@ -399,8 +404,13 @@ grub_usb_controller_dev_register (grub_usb_controller_dev_t usb)
 		if (hub->ports[portno].state == PORT_STATE_WAITING_FOR_STABLE_POWER
 		    && speed == GRUB_USB_SPEED_NONE)
 		  {
+		    /* xHCI: USB2 port got disconnected */
+		    if (changed) {
+		      hub->ports[portno].state = PORT_STATE_FAILED_DEVICE;
+		      continue_waiting--;
+		      continue;
+		    }
 		    hub->ports[portno].soft_limit_time = grub_get_time_ms () + 250;
-		    continue;
 		  }
 		if (hub->ports[portno].state == PORT_STATE_WAITING_FOR_STABLE_POWER
 		    && grub_get_time_ms () > hub->ports[portno].soft_limit_time)
@@ -473,9 +483,9 @@ detach_device (grub_usb_device_t dev)
   if (dev->controller.dev->detach_dev) {
     err = dev->controller.dev->detach_dev (&dev->controller, dev);
     if (err)
-      {
-	// XXX
-      }
+    {
+	    // XXX
+    }
   }
 
   grub_usb_devs[dev->addr] = 0;
@@ -669,15 +679,16 @@ poll_nonroot_hub (grub_usb_device_t dev)
 	      /* Determine the device speed.  */
 	      if (dev->speed == GRUB_USB_SPEED_SUPER)
 	        speed = GRUB_USB_SPEED_SUPER;
-	      else if (status & GRUB_USB_HUB_STATUS_PORT_LOWSPEED)
-		speed = GRUB_USB_SPEED_LOW;
 	      else
-		{
-		  if (status & GRUB_USB_HUB_STATUS_PORT_HIGHSPEED)
-		    speed = GRUB_USB_SPEED_HIGH;
-		  else
-		    speed = GRUB_USB_SPEED_FULL;
-		}
+	        if (status & GRUB_USB_HUB_STATUS_PORT_LOWSPEED)
+		  speed = GRUB_USB_SPEED_LOW;
+	        else
+		  {
+		    if (status & GRUB_USB_HUB_STATUS_PORT_HIGHSPEED)
+		      speed = GRUB_USB_SPEED_HIGH;
+		    else
+		      speed = GRUB_USB_SPEED_FULL;
+		  }
 
 	      /* Wait a recovery time after reset, spec. says 10ms */
 	      grub_millisleep (10);
@@ -710,10 +721,16 @@ poll_nonroot_hub (grub_usb_device_t dev)
 		    split_hubaddr = dev->split_hubaddr;
 		  }
 
+	      grub_uint8_t depth;
+	      grub_uint32_t route;
+	      /* Depth maximum value is 5, but root hubs doesn't count */
+	      for (depth = 0, route = dev->route; (route & 0xf) > 0; route >>= 4)
+	        depth++;
+
 	      /* Add the device and assign a device address to it.  */
-	      next_dev = grub_usb_hub_add_dev (&dev->controller, speed,
+	      next_dev = grub_usb_hub_add_dev (&dev->controller, dev, speed,
 					       split_hubport, split_hubaddr, dev->root_port,
-					       dev->route << 4 | (i & 0xf));
+					       dev->route | ((i & 0xf) << (4 * depth)));
 	      if (dev->controller.dev->pending_reset)
 		{
 		  dev->controller.dev->pending_reset = 0;

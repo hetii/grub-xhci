@@ -76,7 +76,7 @@ grub_xhci_pci_iter (grub_pci_device_t dev, grub_pci_id_t pciid,
       /* Check Serial Bus Release Number */
       addr = grub_pci_make_address (dev, GRUB_XHCI_PCI_SBRN_REG);
       release = grub_pci_read_byte (addr);
-      if (release != 0x30)
+      if ((release < 0x30) || (release > 0x32))
 	{
 	  grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: Wrong SBRN: %0x\n",
 			release);
@@ -89,8 +89,10 @@ grub_xhci_pci_iter (grub_pci_device_t dev, grub_pci_id_t pciid,
       base = grub_pci_read (addr);
       addr = grub_pci_make_address (dev, GRUB_PCI_REG_ADDRESS_REG1);
       base_h = grub_pci_read (addr);
-      /* Stop if registers are mapped above 4G - GRUB does not currently
-       * work with registers mapped above 4G */
+      /*
+       * Stop if registers are mapped above 4G - GRUB does not currently
+       * work with registers mapped above 4G
+       */
       if (((base & GRUB_PCI_ADDR_MEM_TYPE_MASK) != GRUB_PCI_ADDR_MEM_TYPE_32)
 	  && (base_h != 0))
 	{
@@ -161,14 +163,11 @@ grub_xhci_pci_iter (grub_pci_device_t dev, grub_pci_id_t pciid,
 	    }
 	}
       else if (usblegsup & GRUB_XHCI_OS_OWNED)
-	/* XXX: What to do in this case - nothing ? Can it happen ? */
 	grub_dprintf ("xhci", "XHCI grub_xhci_pci_iter: XHCI owned by: OS\n");
       else
 	{
 	  grub_dprintf ("xhci",
 			"XHCI grub_Xhci_pci_iter: XHCI owned by: NONE\n");
-	  /* XXX: What to do in this case ? Can it happen ?
-	   * Is code below correct ? */
 	  /* Ownership change - set OS_OWNED bit */
 	  grub_pci_write (pciaddr_eecp, GRUB_XHCI_OS_OWNED);
 	  /* Ensure PCI register is written */

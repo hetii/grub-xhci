@@ -233,12 +233,16 @@ struct grub_usb_device
 
   struct grub_usb_desc_endp *hub_endpoint;
 
+  /* HS hub TT Think Time (USB2.0 spec 11.23.2.1) */
+  grub_uint8_t tt_think_time;
+
   /* EHCI Split Transfer information */
   int split_hubport;
 
   int split_hubaddr;
 
   /* xHCI specific information */
+  grub_usb_device_t parent;
   int root_port;
   grub_uint32_t route;
   void *xhci_priv;
@@ -338,9 +342,9 @@ grub_usb_cancel_transfer (grub_usb_transfer_t trans);
 void
 grub_ehci_init_device (volatile void *regs);
 void
-grub_xhci_init_device (volatile void *regs);
-void
 grub_ehci_pci_scan (void);
+void
+grub_xhci_init_device (volatile void *regs);
 void
 grub_xhci_pci_scan (void);
 
